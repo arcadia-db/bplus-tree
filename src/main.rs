@@ -20,5 +20,5 @@ fn main() {
 
     println!("All OK");
 
-    let b: BPTree<i32, String> = BPTree::new();
+    let b: BPTree<i32, String, 2> = BPTree::new();
 }

@@ -1,10 +1,10 @@
 use crate::btree::node::*;
 #[derive(Debug)]
-pub struct BPTree<K: Key, V: Record> {
-    root: Option<NodePtr<K, V>>,
+pub struct BPTree<K: Key, V: Record, const FANOUT: usize> {
+    root: Option<NodePtr<K, V, FANOUT>>,
 }
 
-impl<K: Key, V: Record> BPTree<K, V> {
+impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
     pub fn new() -> Self {
         Self { root: None }
     }
@@ -76,7 +76,7 @@ impl<K: Key, V: Record> BPTree<K, V> {
     pub fn insert(&self, key: &K, record: &V) {}
 
     /* private */
-    fn get_leaf_node(&self, key: &K) -> Option<NodePtr<K, V>> {
+    fn get_leaf_node(&self, key: &K) -> Option<NodePtr<K, V, FANOUT>> {
         let mut cur = self.root.clone()?;
 
         loop {
@@ -113,11 +113,12 @@ mod tests {
 
     #[test]
     fn test_search() {
+        const TEST_FANOUT: usize = 2;
         // Create node (0 = "John"), (2 = "Adam")
-        let node_leaf1: Node<i32, String> = Node::Leaf(Leaf {
+        let node_leaf1: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
             size: 2,
-            keys: [Some(0), Some(2)],
-            records: [
+            keys: vec![Some(0), Some(2)],
+            records: vec![
                 Some(Arc::new(RwLock::new(String::from("John")))),
                 Some(Arc::new(RwLock::new(String::from("Adam")))),
             ],
@@ -128,10 +129,10 @@ mod tests {
         let node_leaf1_ptr = Arc::new(RwLock::new(node_leaf1));
 
         // Create node (10 = "Emily"), (12 = "Jessica")
-        let node_leaf2: Node<i32, String> = Node::Leaf(Leaf {
+        let node_leaf2: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
             size: 2,
-            keys: [Some(10), Some(12)],
-            records: [
+            keys: vec![Some(10), Some(12)],
+            records: vec![
                 Some(Arc::new(RwLock::new(String::from("Emily")))),
                 Some(Arc::new(RwLock::new(String::from("Jessica")))),
             ],
@@ -142,10 +143,10 @@ mod tests {
         let node_leaf2_ptr = Arc::new(RwLock::new(node_leaf2));
 
         // Create node (20 = "Sam")
-        let node_leaf3: Node<i32, String> = Node::Leaf(Leaf {
+        let node_leaf3: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
             size: 1,
-            keys: [Some(20), None],
-            records: [Some(Arc::new(RwLock::new(String::from("Sam")))), None],
+            keys: vec![Some(20), None],
+            records: vec![Some(Arc::new(RwLock::new(String::from("Sam")))), None],
             parent: None,
             prev: Some(Arc::downgrade(&node_leaf2_ptr)),
             next: None,
@@ -163,10 +164,10 @@ mod tests {
         drop(lock);
 
         // Create interior (node_leaf1_ptr, node_leaf2_ptr, node_leaf3_ptr)
-        let node_interior1: Node<i32, String> = Node::Interior(Interior {
+        let node_interior1: Node<i32, String, TEST_FANOUT> = Node::Interior(Interior {
             size: 2,
-            keys: [Some(10), Some(20)],
-            children: [
+            keys: vec![Some(10), Some(20)],
+            children: vec![
                 Some(node_leaf1_ptr),
                 Some(node_leaf2_ptr),
                 Some(node_leaf3_ptr),
@@ -176,7 +177,7 @@ mod tests {
 
         // Set all children of node_interior1's ptr_leaf_parent to node_interior1
         let lock = node_interior1_ptr.write().unwrap();
-        for child in lock.unwrap_interior().children.as_ref() {
+        for child in &lock.unwrap_interior().children {
             if let Some(ptr) = child.as_ref() {
                 let mut ptr_lock = ptr.write().unwrap();
                 ptr_lock.unwrap_leaf_mut().parent = Some(Arc::downgrade(&node_interior1_ptr));
@@ -186,7 +187,7 @@ mod tests {
         drop(lock);
 
         // Create B+Tree
-        let bptree1: BPTree<i32, String> = BPTree {
+        let bptree1: BPTree<i32, String, TEST_FANOUT> = BPTree {
             root: Some(node_interior1_ptr),
         };
 
@@ -230,11 +231,13 @@ mod tests {
 
     #[test]
     fn test_range_search() {
+        const TEST_FANOUT: usize = 2;
+
         // Create node (0 = "John"), (2 = "Adam")
-        let node_leaf1: Node<i32, String> = Node::Leaf(Leaf {
+        let node_leaf1: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
             size: 2,
-            keys: [Some(0), Some(2)],
-            records: [
+            keys: vec![Some(0), Some(2)],
+            records: vec![
                 Some(Arc::new(RwLock::new(String::from("John")))),
                 Some(Arc::new(RwLock::new(String::from("Adam")))),
             ],
@@ -245,10 +248,10 @@ mod tests {
         let node_leaf1_ptr = Arc::new(RwLock::new(node_leaf1));
 
         // Create node (10 = "Emily"), (12 = "Jessica")
-        let node_leaf2: Node<i32, String> = Node::Leaf(Leaf {
+        let node_leaf2: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
             size: 2,
-            keys: [Some(10), Some(12)],
-            records: [
+            keys: vec![Some(10), Some(12)],
+            records: vec![
                 Some(Arc::new(RwLock::new(String::from("Emily")))),
                 Some(Arc::new(RwLock::new(String::from("Jessica")))),
             ],
@@ -259,10 +262,10 @@ mod tests {
         let node_leaf2_ptr = Arc::new(RwLock::new(node_leaf2));
 
         // Create node (20 = "Sam")
-        let node_leaf3: Node<i32, String> = Node::Leaf(Leaf {
+        let node_leaf3: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
             size: 1,
-            keys: [Some(20), None],
-            records: [Some(Arc::new(RwLock::new(String::from("Sam")))), None],
+            keys: vec![Some(20), None],
+            records: vec![Some(Arc::new(RwLock::new(String::from("Sam")))), None],
             parent: None,
             prev: Some(Arc::downgrade(&node_leaf2_ptr)),
             next: None,
@@ -280,10 +283,10 @@ mod tests {
         drop(lock);
 
         // Create interior (node_leaf1_ptr, node_leaf2_ptr, node_leaf3_ptr)
-        let node_interior1: Node<i32, String> = Node::Interior(Interior {
+        let node_interior1: Node<i32, String, TEST_FANOUT> = Node::Interior(Interior {
             size: 2,
-            keys: [Some(10), Some(20)],
-            children: [
+            keys: vec![Some(10), Some(20)],
+            children: vec![
                 Some(node_leaf1_ptr),
                 Some(node_leaf2_ptr),
                 Some(node_leaf3_ptr),
@@ -293,7 +296,7 @@ mod tests {
 
         // Set all children of node_interior1's ptr_leaf_parent to node_interior1
         let lock = node_interior1_ptr.write().unwrap();
-        for child in lock.unwrap_interior().children.as_ref() {
+        for child in &lock.unwrap_interior().children {
             if let Some(ptr) = child.as_ref() {
                 let mut ptr_lock = ptr.write().unwrap();
                 ptr_lock.unwrap_leaf_mut().parent = Some(Arc::downgrade(&node_interior1_ptr));
@@ -303,7 +306,7 @@ mod tests {
         drop(lock);
 
         // Create B+Tree
-        let bptree1: BPTree<i32, String> = BPTree {
+        let bptree1: BPTree<i32, String, TEST_FANOUT> = BPTree {
             root: Some(node_interior1_ptr),
         };
 
