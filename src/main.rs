@@ -3,6 +3,7 @@ use btree::btree::BPTree;
 
 pub mod bst;
 pub mod btree;
+pub mod misc;
 
 fn main() {
     // let mut a = BST::new();
