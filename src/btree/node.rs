@@ -1,8 +1,11 @@
-use std::sync::{Arc, RwLock, Weak};
+use std::{
+    fmt::Debug,
+    sync::{Arc, RwLock, Weak},
+};
 
-pub trait Key: PartialEq + PartialOrd + Clone {}
+pub trait Key: PartialEq + PartialOrd + Clone + Debug {}
 
-pub trait Record: Clone {}
+pub trait Record: Clone + Debug {}
 
 pub type NodePtr<K, T, const FANOUT: usize> = Arc<RwLock<Node<K, T, FANOUT>>>;
 
@@ -12,7 +15,7 @@ pub type RecordPtr<T> = Arc<RwLock<T>>;
 
 #[derive(Debug)]
 pub struct Leaf<K: Key, V: Record, const FANOUT: usize> {
-    pub size: usize,
+    pub num_keys: usize,
     pub keys: Vec<Option<K>>,
     pub records: Vec<Option<RecordPtr<V>>>,
     pub parent: Option<NodeWeakPtr<K, V, FANOUT>>,
@@ -22,9 +25,10 @@ pub struct Leaf<K: Key, V: Record, const FANOUT: usize> {
 
 #[derive(Debug)]
 pub struct Interior<K: Key, V: Record, const FANOUT: usize> {
-    pub size: usize,
+    pub num_keys: usize,
     pub keys: Vec<Option<K>>,
     pub children: Vec<Option<NodePtr<K, V, FANOUT>>>,
+    pub parent: Option<NodeWeakPtr<K, V, FANOUT>>,
 }
 
 #[derive(Debug, Default)]
@@ -38,9 +42,9 @@ pub enum Node<K: Key, V: Record, const FANOUT: usize> {
 impl<K: Key, V: Record, const FANOUT: usize> Node<K, V, FANOUT> {
     pub fn new_leaf() -> Leaf<K, V, FANOUT> {
         Leaf {
-            size: 0,
-            keys: vec![None; FANOUT],
-            records: vec![None; FANOUT + 1],
+            num_keys: 0,
+            keys: vec![None; FANOUT - 1],
+            records: vec![None; FANOUT - 1],
             parent: None,
             prev: None,
             next: None,
@@ -48,9 +52,10 @@ impl<K: Key, V: Record, const FANOUT: usize> Node<K, V, FANOUT> {
     }
     pub fn new_interior() -> Interior<K, V, FANOUT> {
         Interior {
-            size: 0,
-            keys: vec![None; FANOUT],
-            children: vec![None; FANOUT + 1],
+            num_keys: 0,
+            keys: vec![None; FANOUT - 1],
+            children: vec![None; FANOUT],
+            parent: None,
         }
     }
 
