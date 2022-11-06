@@ -5,10 +5,10 @@ pub mod bst;
 pub mod btree;
 
 fn main() {
-    // let mut a = BST::new();
-    // a.insert(5);
-    // a.insert(3);
-    // a.insert(6);
+    let mut a = BST::new();
+    a.insert(5);
+    a.insert(3);
+    a.insert(6);
     // a.insert(2);
 
     // assert_eq!(a.search(7), false);

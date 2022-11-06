@@ -35,15 +35,13 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
         let mut i = 0;
 
         let leaf_lock = leaf.as_ref().unwrap().read().unwrap();
-        {
-            let leaf_node = leaf_lock.unwrap_leaf();
+        let leaf_node = leaf_lock.unwrap_leaf();
 
-            while i < leaf_node.num_keys && leaf_node.keys[i].as_ref().unwrap() < start {
-                i += 1;
-            }
-            if i >= leaf_node.num_keys {
-                return res;
-            }
+        while i < leaf_node.num_keys && leaf_node.keys[i].as_ref().unwrap() < start {
+            i += 1;
+        }
+        if i >= leaf_node.num_keys {
+            return res;
         }
 
         drop(leaf_lock);
@@ -51,18 +49,17 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
         while !leaf.is_none() {
             let next;
             let leaf_lock = leaf.as_ref().unwrap().read().unwrap();
-            {
-                let leaf_node = leaf_lock.unwrap_leaf();
 
-                while i < leaf_node.num_keys && leaf_node.keys[i].as_ref().unwrap() <= end {
-                    res.push(leaf_node.records[i].as_ref().unwrap().clone());
-                    i += 1;
-                }
-                next = leaf_node.next.clone();
+            let leaf_node = leaf_lock.unwrap_leaf();
 
-                if i != leaf_node.num_keys {
-                    break;
-                }
+            while i < leaf_node.num_keys && leaf_node.keys[i].as_ref().unwrap() <= end {
+                res.push(leaf_node.records[i].as_ref().unwrap().clone());
+                i += 1;
+            }
+            next = leaf_node.next.clone();
+
+            if i != leaf_node.num_keys {
+                break;
             }
 
             drop(leaf_lock);
@@ -195,10 +192,10 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
         right: NodePtr<K, V, FANOUT>,
     ) {
         let mut left_lock = left.write().unwrap();
-        let parent = match &*left_lock {
-            Node::Leaf(leaf) => leaf.parent.as_ref(),
+        let parent = match *left_lock {
+            Node::Leaf(ref leaf) => leaf.parent.as_ref(),
             Node::Invalid => panic!("Invalid node"),
-            Node::Interior(node) => node.parent.as_ref(),
+            Node::Interior(ref node) => node.parent.as_ref(),
         };
 
         // 3 cases for insert into parent
@@ -211,13 +208,13 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
             new_node.num_keys = 1;
             self.root = Some(Arc::new(RwLock::new(Node::Interior(new_node))));
 
-            match &mut *left_lock {
+            match *left_lock {
                 Node::Invalid => panic!("Invalid Node"),
-                Node::Leaf(leaf) => {
+                Node::Leaf(ref mut leaf) => {
                     leaf.parent = Some(Arc::downgrade(&self.root.as_ref().unwrap()));
                     leaf.next = Some(Arc::downgrade(&right));
                 }
-                Node::Interior(node) => {
+                Node::Interior(ref mut node) => {
                     node.parent = Some(Arc::downgrade(&self.root.as_ref().unwrap()));
                 }
             }
@@ -237,9 +234,97 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
             drop(right_lock);
             return;
         }
-        let parent = parent.unwrap().upgrade().unwrap();
+        let parent_node = parent.unwrap().upgrade().unwrap();
+        let mut parent_lock = parent_node.write().unwrap();
+        let parent = parent_lock.unwrap_interior_mut();
+
         // TODO: 2 - interior node has no space so we have to split it
-        // TODO: 3 - interior node has space so we just have to insert key / record
+        if parent.num_keys == FANOUT - 1 {
+            let mut new_interior: Interior<K, V, FANOUT> = Node::new_interior();
+            let split = FANOUT / 2;
+            let mut insertion_idx = 0;
+            while insertion_idx < new_interior.num_keys
+                && new_interior.keys[insertion_idx].as_ref().unwrap() < key
+            {
+                insertion_idx += 1;
+            }
+
+            // The node has FANOUT - 1 keys, so we split at (FANOUT - 1) / 2
+            // Example, if FANOUT is 3, there are 2 keys (and 2 records since it's a leaf node)
+            // Thus, split is at (3 / 2 = 1), and so we keep 1 key in this node, and the others in another node
+            // if FANOUT is 4, there are 3 keys. Split is at (4 / 2 = 2). So we keep 2 keys in this node, and put
+            // 1 keys in the new node. So there is split keys in the left half and n - split keys in the right half
+            // we want the first 0
+
+            let num_total_keys = FANOUT;
+            let mut cur = 0;
+            let mut old_read_idx = parent.num_keys - 1;
+            while cur < num_total_keys {
+                let write_idx = num_total_keys - cur - 1;
+                // insert in new interior node
+                if write_idx >= split {
+                    let new_write_idx = write_idx - split;
+                    if write_idx == insertion_idx {
+                        new_interior.keys[new_write_idx] = Some(key.clone());
+                        new_interior.children[new_write_idx] = Some(right.clone());
+                    } else {
+                        new_interior.keys[new_write_idx] = parent.keys[old_read_idx].clone();
+                        new_interior.children[new_write_idx] =
+                            parent.children[old_read_idx].clone();
+                        parent.keys[old_read_idx] = None;
+                        parent.children[old_read_idx] = None;
+
+                        // to prevent overflow
+                        if old_read_idx > 0 {
+                            old_read_idx -= 1;
+                        }
+                    }
+                }
+                // insert in old interior
+                else {
+                    if write_idx == insertion_idx {
+                        parent.keys[write_idx] = Some(key.clone());
+                        parent.children[write_idx] = Some(right.clone());
+                    } else {
+                        parent.keys.swap(write_idx, old_read_idx);
+
+                        // to prevent overflow
+                        if old_read_idx > 0 {
+                            old_read_idx -= 1;
+                        }
+                    }
+                }
+                cur += 1
+            }
+
+            parent.num_keys = split;
+            new_interior.num_keys = num_total_keys - split;
+            new_interior.parent = parent.parent.clone();
+            drop(parent_lock);
+            self.insert_into_parent(
+                parent_node,
+                &new_interior.keys[0].clone().unwrap(),
+                Arc::new(RwLock::new(Node::Interior(new_interior))),
+            );
+
+            return;
+        }
+        // 3 - interior node has space so we just have to insert key / record
+        let mut insertion_idx = 0;
+        while insertion_idx < parent.num_keys && parent.keys[insertion_idx].as_ref().unwrap() < key
+        {
+            insertion_idx += 1
+        }
+
+        let mut i = parent.num_keys;
+        while i > insertion_idx {
+            parent.keys.swap(i, i - 1);
+            parent.children.swap(i, i - 1);
+            i -= 1
+        }
+        parent.keys[insertion_idx] = Some(key.clone());
+        parent.children[insertion_idx + 1] = Some(right.clone());
+        parent.num_keys += 1;
     }
 
     /* private */
@@ -532,5 +617,26 @@ mod tests {
         let lock = res.read().unwrap();
         assert_eq!(*lock, "Rajat");
         drop(lock);
+
+        bptree.insert(&4, &String::from("Erik"));
+        let res = bptree.search(&4).unwrap();
+        let lock = res.read().unwrap();
+        assert_eq!(*lock, "Erik");
+        drop(lock);
+
+        // This causes a new leaf node and adding a key to the root internal node
+        // println!("{:#?}", bptree);
+        bptree.insert(&14, &String::from("Golden"));
+        let res = bptree.search(&14).unwrap();
+        let lock = res.read().unwrap();
+        assert_eq!(*lock, "Golden");
+        drop(lock);
+
+        // bptree.insert(&16, &String::from("Backpack"));
+        println!("{:#?}", bptree);
+        // let res = bptree.search(&16).unwrap();
+        // let lock = res.read().unwrap();
+        // assert_eq!(*lock, "Backpack");
+        // drop(lock);
     }
 }
