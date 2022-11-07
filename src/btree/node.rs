@@ -16,6 +16,8 @@ pub type RecordPtr<T> = Arc<RwLock<T>>;
 #[derive(Debug)]
 pub struct Leaf<K: Key, V: Record, const FANOUT: usize> {
     pub num_keys: usize,
+    // the last element is simply used as a temporary when splitting
+    // so the max amount of keys/records is FANOUT - 1
     pub keys: Vec<Option<K>>,
     pub records: Vec<Option<RecordPtr<V>>>,
     pub parent: Option<NodeWeakPtr<K, V, FANOUT>>,
@@ -26,6 +28,8 @@ pub struct Leaf<K: Key, V: Record, const FANOUT: usize> {
 #[derive(Debug)]
 pub struct Interior<K: Key, V: Record, const FANOUT: usize> {
     pub num_keys: usize,
+    // the last element is simply used as a temporary when splitting
+    // so the max amount of keys is FANOUT - 1 and children is FANOUT
     pub keys: Vec<Option<K>>,
     pub children: Vec<Option<NodePtr<K, V, FANOUT>>>,
     pub parent: Option<NodeWeakPtr<K, V, FANOUT>>,
@@ -43,8 +47,8 @@ impl<K: Key, V: Record, const FANOUT: usize> Node<K, V, FANOUT> {
     pub fn new_leaf() -> Leaf<K, V, FANOUT> {
         Leaf {
             num_keys: 0,
-            keys: vec![None; FANOUT - 1],
-            records: vec![None; FANOUT - 1],
+            keys: vec![None; FANOUT],
+            records: vec![None; FANOUT],
             parent: None,
             prev: None,
             next: None,
@@ -53,8 +57,8 @@ impl<K: Key, V: Record, const FANOUT: usize> Node<K, V, FANOUT> {
     pub fn new_interior() -> Interior<K, V, FANOUT> {
         Interior {
             num_keys: 0,
-            keys: vec![None; FANOUT - 1],
-            children: vec![None; FANOUT],
+            keys: vec![None; FANOUT],
+            children: vec![None; FANOUT + 1],
             parent: None,
         }
     }
@@ -121,5 +125,21 @@ impl<K: Key, V: Record, const FANOUT: usize> Node<K, V, FANOUT> {
 
     pub(super) fn unwrap_interior_mut(&mut self) -> &mut Interior<K, V, FANOUT> {
         self.interior_mut().unwrap()
+    }
+
+    pub(super) fn set_parent(&mut self, parent: Option<NodeWeakPtr<K, V, FANOUT>>) {
+        match self {
+            Node::Invalid => panic!("Invalid Node encountered while setting parent"),
+            Node::Leaf(leaf) => leaf.parent = parent,
+            Node::Interior(node) => node.parent = parent,
+        }
+    }
+
+    pub(super) fn get_parent(&self) -> Option<NodeWeakPtr<K, V, FANOUT>> {
+        match self {
+            Node::Invalid => panic!("Invalid Node encountered while setting parent"),
+            Node::Leaf(leaf) => leaf.parent.clone(),
+            Node::Interior(node) => node.parent.clone(),
+        }
     }
 }
