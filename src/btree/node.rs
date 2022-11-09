@@ -143,3 +143,41 @@ impl<K: Key, V: Record, const FANOUT: usize> Node<K, V, FANOUT> {
         }
     }
 }
+
+pub trait LockInClosure<K, V, const FANOUT: usize> {
+    fn safe_read<F>(&self, f: F)
+    where
+        F: FnOnce(&Node<K, V, FANOUT>);
+
+    fn safe_write<F>(&self, f: F)
+    where
+        F: FnOnce(&mut Node<K, V, FANOUT>);
+}
+
+impl<K: Key, V: Record, const FANOUT: usize> LockInClosure<K, V, FANOUT>
+    for Option<NodePtr<K, V, FANOUT>>
+{
+    fn safe_read<F>(&self, f: F)
+    where
+        F: FnOnce(&Node<K, V, FANOUT>),
+    {
+        if let None = self {
+            return;
+        }
+        let lock = self.as_ref().unwrap().read().unwrap();
+        f(&*lock);
+        drop(lock);
+    }
+
+    fn safe_write<F>(&self, f: F)
+    where
+        F: FnOnce(&mut Node<K, V, FANOUT>),
+    {
+        if let None = self {
+            return;
+        }
+        let mut lock = self.as_ref().unwrap().write().unwrap();
+        f(&mut *lock);
+        drop(lock);
+    }
+}
