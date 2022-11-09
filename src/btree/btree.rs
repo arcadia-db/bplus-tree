@@ -48,7 +48,7 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
 
         drop(leaf_lock);
 
-        while !leaf.is_none() {
+        while leaf.is_some() {
             let leaf_lock = leaf.as_ref().unwrap().read().unwrap();
 
             let leaf_node = leaf_lock.unwrap_leaf();
@@ -71,7 +71,7 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
             i = 0;
         }
 
-        return res;
+        res
     }
 
     pub fn insert(&mut self, key: &K, record: &V) {
@@ -164,11 +164,11 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
             self.root = Some(Arc::new(RwLock::new(Node::Interior(new_node))));
 
             let mut left_lock = left.write().unwrap();
-            left_lock.set_parent(Some(Arc::downgrade(&self.root.as_ref().unwrap())));
+            left_lock.set_parent(Some(Arc::downgrade(self.root.as_ref().unwrap())));
             drop(left_lock);
 
             let mut right_lock = right.write().unwrap();
-            right_lock.set_parent(Some(Arc::downgrade(&self.root.as_ref().unwrap())));
+            right_lock.set_parent(Some(Arc::downgrade(self.root.as_ref().unwrap())));
             drop(right_lock);
             return;
         }
@@ -184,7 +184,7 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
         let mut left_idx_in_parent = 0;
         while left_idx_in_parent < parent.num_keys
             && !Arc::ptr_eq(
-                &parent.children[left_idx_in_parent].as_ref().unwrap(),
+                parent.children[left_idx_in_parent].as_ref().unwrap(),
                 &left,
             )
         {
@@ -638,149 +638,47 @@ mod tests {
 
         let N = numbers[0];
 
-        return (
+        (
             numbers[1..N + 1].to_vec(),
             numbers[N + 1..2 * N + 1].to_vec(),
             numbers[2 * N + 1..numbers.len()].to_vec(),
-        );
+        )
     }
 
     fn sizes_helper(keys: &Vec<usize>, values: &Vec<usize>, expected: &Vec<usize>, verify: bool) {
-        let mut bptree: BPTree<usize, usize, 5> = BPTree::new();
+        macro_rules! SIZES_TEST {
+            ($size: expr, $optimize: expr) => {
+                let mut bptree: BPTree<usize, usize, $size> = BPTree::new();
 
-        for i in 0..keys.len() {
-            bptree.insert(&keys[i], &values[i]);
+                for i in 0..keys.len() {
+                    bptree.insert(&keys[i], &values[i]);
+                    let start = if verify { 0 } else { i };
 
-            let start = if verify { 0 } else { i };
-            for j in start..=i {
-                let res = bptree.search(&keys[j]).unwrap();
-                let lock = res.read().unwrap();
-                assert_eq!(*lock, values[j]);
-                drop(lock);
-            }
+                    if (!$optimize) {
+                        for j in start..=i {
+                            let res = bptree.search(&keys[j]).unwrap();
+                            let lock = res.read().unwrap();
+                            assert_eq!(*lock, values[j]);
+                            drop(lock);
+                        }
+                    }
+                }
+
+                let res = bptree.search_range(&0, &(std::usize::MAX - 1));
+                assert_eq!(res.len(), expected.len());
+
+                for i in 0..res.len() {
+                    let lock = res[i].read().unwrap();
+                    assert_eq!(*lock, expected[i]);
+                    drop(lock);
+                }
+            };
         }
-        let res = bptree.search_range(&0, &(std::usize::MAX - 1));
-        assert_eq!(res.len(), expected.len());
-
-        for i in 0..res.len() {
-            let lock = res[i].read().unwrap();
-            assert_eq!(*lock, expected[i]);
-            drop(lock);
-        }
-
-        let mut bptree: BPTree<usize, usize, 6> = BPTree::new();
-
-        for i in 0..keys.len() {
-            bptree.insert(&keys[i], &values[i]);
-
-            let start = if verify { 0 } else { i };
-            for j in start..=i {
-                let res = bptree.search(&keys[j]).unwrap();
-                let lock = res.read().unwrap();
-                assert_eq!(*lock, values[j]);
-                drop(lock);
-            }
-        }
-
-        let res = bptree.search_range(&0, &(std::usize::MAX - 1));
-        assert_eq!(res.len(), expected.len());
-
-        for i in 0..res.len() {
-            let lock = res[i].read().unwrap();
-            assert_eq!(*lock, expected[i]);
-            drop(lock);
-        }
-
-        let mut bptree: BPTree<usize, usize, 7> = BPTree::new();
-
-        for i in 0..keys.len() {
-            bptree.insert(&keys[i], &values[i]);
-            let start = if verify { 0 } else { i };
-
-            for j in start..=i {
-                let res = bptree.search(&keys[j]).unwrap();
-                let lock = res.read().unwrap();
-                assert_eq!(*lock, values[j]);
-                drop(lock);
-            }
-        }
-
-        let res = bptree.search_range(&0, &(std::usize::MAX - 1));
-        assert_eq!(res.len(), expected.len());
-
-        for i in 0..res.len() {
-            let lock = res[i].read().unwrap();
-            assert_eq!(*lock, expected[i]);
-            drop(lock);
-        }
-
-        let mut bptree: BPTree<usize, usize, 22> = BPTree::new();
-
-        for i in 0..keys.len() {
-            bptree.insert(&keys[i], &values[i]);
-            let start = if verify { 0 } else { i };
-
-            for j in start..=i {
-                let res = bptree.search(&keys[j]).unwrap();
-                let lock = res.read().unwrap();
-                assert_eq!(*lock, values[j]);
-                drop(lock);
-            }
-        }
-
-        let res = bptree.search_range(&0, &(std::usize::MAX - 1));
-        assert_eq!(res.len(), expected.len());
-
-        for i in 0..res.len() {
-            let lock = res[i].read().unwrap();
-            assert_eq!(*lock, expected[i]);
-            drop(lock);
-        }
-
-        let mut bptree: BPTree<usize, usize, 255> = BPTree::new();
-
-        for i in 0..keys.len() {
-            bptree.insert(&keys[i], &values[i]);
-            let start = if verify { 0 } else { i };
-
-            for j in start..=i {
-                let res = bptree.search(&keys[j]).unwrap();
-                let lock = res.read().unwrap();
-                assert_eq!(*lock, values[j]);
-                drop(lock);
-            }
-        }
-
-        let res = bptree.search_range(&0, &(std::usize::MAX - 1));
-        assert_eq!(res.len(), expected.len());
-
-        for i in 0..res.len() {
-            let lock = res[i].read().unwrap();
-            assert_eq!(*lock, expected[i]);
-            drop(lock);
-        }
-
-        let mut bptree: BPTree<usize, usize, 2> = BPTree::new();
-
-        for i in 0..keys.len() {
-            bptree.insert(&keys[i], &values[i]);
-            let start = if verify { 0 } else { i };
-
-            for j in start..=i {
-                let res = bptree.search(&keys[j]).unwrap();
-                let lock = res.read().unwrap();
-                assert_eq!(*lock, values[j]);
-                drop(lock);
-            }
-        }
-
-        let res = bptree.search_range(&0, &(std::usize::MAX - 1));
-        assert_eq!(res.len(), expected.len());
-
-        for i in 0..res.len() {
-            let lock = res[i].read().unwrap();
-            assert_eq!(*lock, expected[i]);
-            drop(lock);
-        }
+        SIZES_TEST!(5, false);
+        SIZES_TEST!(6, false);
+        SIZES_TEST!(7, false);
+        SIZES_TEST!(22, false);
+        SIZES_TEST!(255, false);
+        SIZES_TEST!(2, false);
     }
 }
