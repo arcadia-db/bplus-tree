@@ -1,7 +1,7 @@
 use super::typedefs::*;
 use std::sync::{Arc, RwLock, Weak};
 
-const INVALID_NODE_ERROR_MESSAGE: &'static str = "Invalid node encountered!";
+const INVALID_NODE_ERROR_MESSAGE: &str = "Invalid node encountered!";
 
 pub type NodePtr<const FANOUT: usize, K, T> = Arc<RwLock<Node<FANOUT, K, T>>>;
 
@@ -86,19 +86,9 @@ impl<const FANOUT: usize, K: Key, T: Record> Node<FANOUT, K, T> {
     pub(super) fn set_parent(&mut self, parent: Option<NodePtr<FANOUT, K, T>>) {
         match self {
             Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
-            Node::Leaf(leaf) => {
-                leaf.parent = if let Some(parent) = parent {
-                    Some(Arc::downgrade(&parent))
-                } else {
-                    None
-                };
-            }
+            Node::Leaf(leaf) => leaf.parent = parent.map(|parent| Arc::downgrade(&parent)),
             Node::Interior(interior) => {
-                interior.parent = if let Some(parent) = parent {
-                    Some(Arc::downgrade(&parent))
-                } else {
-                    None
-                };
+                interior.parent = parent.map(|parent| Arc::downgrade(&parent))
             }
         }
     }

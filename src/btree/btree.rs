@@ -80,7 +80,7 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         let searched_record = self.search(&key);
         if let Some(value) = searched_record {
             let mut lock = value.write().unwrap();
-            *lock = record.clone();
+            *lock = record;
             drop(lock);
             return;
         }
@@ -88,8 +88,8 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         // 2 - Empty tree so start a new tree
         if self.root.is_none() {
             let mut new_node = Node::new_leaf();
-            new_node.keys[0] = Some(key.clone());
-            new_node.records[0] = Some(Arc::new(RwLock::new(record.clone())));
+            new_node.keys[0] = Some(key);
+            new_node.records[0] = Some(Arc::new(RwLock::new(record)));
             new_node.num_keys += 1;
             self.root = Some(Arc::new(RwLock::new(Node::Leaf(new_node))));
             return;
@@ -112,8 +112,8 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
             leaf.records.swap(i, i - 1);
             i -= 1
         }
-        leaf.keys[insertion_idx] = Some(key.clone());
-        leaf.records[insertion_idx] = Some(Arc::new(RwLock::new(record.clone())));
+        leaf.keys[insertion_idx] = Some(key);
+        leaf.records[insertion_idx] = Some(Arc::new(RwLock::new(record)));
         leaf.num_keys += 1;
 
         // split if overflow (this is why we added 1 extra spot in the array)
@@ -157,7 +157,7 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         // 1 - No parent for left/right. We need to make a new root node if there is no parent
         if parent.is_none() {
             let mut new_node: Interior<FANOUT, K, T> = Node::new_interior();
-            new_node.keys[0] = Some(key.clone());
+            new_node.keys[0] = Some(key);
             new_node.children[0] = Some(left.clone());
             new_node.children[1] = Some(right.clone());
             new_node.num_keys = 1;
@@ -194,7 +194,7 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
             parent.children.swap(i, i - 1);
             i -= 1
         }
-        parent.keys[left_idx_in_parent] = Some(key.clone());
+        parent.keys[left_idx_in_parent] = Some(key);
         parent.children[left_idx_in_parent + 1] = Some(right.clone());
         parent.num_keys += 1;
 
@@ -385,16 +385,16 @@ mod tests {
         drop(lock);
 
         let res = bptree1.search(&-4);
-        assert_eq!(res.is_none(), true);
+        assert!(res.is_none());
 
         let res = bptree1.search(&3);
-        assert_eq!(res.is_none(), true);
+        assert!(res.is_none());
 
         let res = bptree1.search(&14);
-        assert_eq!(res.is_none(), true);
+        assert!(res.is_none());
 
         let res = bptree1.search(&21);
-        assert_eq!(res.is_none(), true);
+        assert!(res.is_none());
     }
 
     #[test]
@@ -633,16 +633,16 @@ mod tests {
             .map(|line| line.unwrap().parse::<usize>().unwrap())
             .collect();
 
-        let N = numbers[0];
+        let n = numbers[0];
 
         (
-            numbers[1..N + 1].to_vec(),
-            numbers[N + 1..2 * N + 1].to_vec(),
-            numbers[2 * N + 1..numbers.len()].to_vec(),
+            numbers[1..n + 1].to_vec(),
+            numbers[n + 1..2 * n + 1].to_vec(),
+            numbers[2 * n + 1..numbers.len()].to_vec(),
         )
     }
 
-    fn sizes_helper(keys: &Vec<usize>, values: &Vec<usize>, expected: &Vec<usize>, verify: bool) {
+    fn sizes_helper(keys: &[usize], values: &[usize], expected: &[usize], verify: bool) {
         macro_rules! SIZES_TEST {
             ($size: expr, $optimize: expr) => {
                 let mut bptree: BPTree<$size, usize, usize> = BPTree::new();
