@@ -1,50 +1,55 @@
-use std::{
-    fmt::Debug,
-    sync::{Arc, RwLock, Weak},
-};
+use super::typedefs::*;
+use std::sync::{Arc, RwLock, Weak};
 
-pub trait Key: PartialEq + PartialOrd + Clone + Debug {}
+const INVALID_NODE_ERROR_MESSAGE: &str = "Invalid node encountered!";
 
-pub trait Record: Clone + Debug {}
+pub type NodePtr<const FANOUT: usize, K, T> = Arc<RwLock<Node<FANOUT, K, T>>>;
 
-pub type NodePtr<K, T, const FANOUT: usize> = Arc<RwLock<Node<K, T, FANOUT>>>;
-
-pub type NodeWeakPtr<K, T, const FANOUT: usize> = Weak<RwLock<Node<K, T, FANOUT>>>;
+pub type NodeWeakPtr<const FANOUT: usize, K, T> = Weak<RwLock<Node<FANOUT, K, T>>>;
 
 pub type RecordPtr<T> = Arc<RwLock<T>>;
 
 #[derive(Debug)]
-pub struct Leaf<K: Key, V: Record, const FANOUT: usize> {
+pub struct Leaf<const FANOUT: usize, K: Key, T: Record> {
     pub num_keys: usize,
-    // the last element is simply used as a temporary when splitting
-    // so the max amount of keys/records is FANOUT - 1
     pub keys: Vec<Option<K>>,
-    pub records: Vec<Option<RecordPtr<V>>>,
-    pub parent: Option<NodeWeakPtr<K, V, FANOUT>>,
-    pub prev: Option<NodeWeakPtr<K, V, FANOUT>>,
-    pub next: Option<NodeWeakPtr<K, V, FANOUT>>,
+    pub records: Vec<Option<RecordPtr<T>>>,
+    pub parent: Option<NodeWeakPtr<FANOUT, K, T>>,
+    pub prev: Option<NodeWeakPtr<FANOUT, K, T>>,
+    pub next: Option<NodeWeakPtr<FANOUT, K, T>>,
 }
 
 #[derive(Debug)]
-pub struct Interior<K: Key, V: Record, const FANOUT: usize> {
+pub struct Interior<const FANOUT: usize, K: Key, T: Record> {
     pub num_keys: usize,
-    // the last element is simply used as a temporary when splitting
-    // so the max amount of keys is FANOUT - 1 and children is FANOUT
     pub keys: Vec<Option<K>>,
-    pub children: Vec<Option<NodePtr<K, V, FANOUT>>>,
-    pub parent: Option<NodeWeakPtr<K, V, FANOUT>>,
+    pub parent: Option<NodeWeakPtr<FANOUT, K, T>>,
+    pub children: Vec<Option<NodePtr<FANOUT, K, T>>>,
 }
 
-#[derive(Debug, Default)]
-pub enum Node<K: Key, V: Record, const FANOUT: usize> {
+#[derive(Default, Debug)]
+pub enum Node<const FANOUT: usize, K: Key, T: Record> {
     #[default]
     Invalid,
-    Leaf(Leaf<K, V, FANOUT>),
-    Interior(Interior<K, V, FANOUT>),
+    Leaf(Leaf<FANOUT, K, T>),
+    Interior(Interior<FANOUT, K, T>),
 }
 
-impl<K: Key, V: Record, const FANOUT: usize> Node<K, V, FANOUT> {
-    pub fn new_leaf() -> Leaf<K, V, FANOUT> {
+macro_rules! create_node_get_fn {
+    ($name:ident, $param:ty, $ret:ty, $match:ident) => {
+        pub(super) fn $name(self: $param) -> Option<$ret> {
+            match self {
+                Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+                Node::$match(value) => Some(value),
+                _ => None,
+            }
+        }
+    };
+}
+
+impl<const FANOUT: usize, K: Key, T: Record> Node<FANOUT, K, T> {
+    pub fn new_leaf() -> Leaf<FANOUT, K, T> {
+        assert!(FANOUT > 1);
         Leaf {
             num_keys: 0,
             keys: vec![None; FANOUT],
@@ -54,92 +59,37 @@ impl<K: Key, V: Record, const FANOUT: usize> Node<K, V, FANOUT> {
             next: None,
         }
     }
-    pub fn new_interior() -> Interior<K, V, FANOUT> {
+
+    pub fn new_interior() -> Interior<FANOUT, K, T> {
+        assert!(FANOUT > 1);
         Interior {
             num_keys: 0,
             keys: vec![None; FANOUT],
-            children: vec![None; FANOUT + 1],
             parent: None,
+            children: vec![None; FANOUT + 1],
         }
     }
 
-    pub(super) fn leaf(&self) -> Option<&Leaf<K, V, FANOUT>> {
-        if let Node::Invalid = self {
-            panic!("Invalid Node encountered while accessing leaf!")
-        }
+    create_node_get_fn!(get_leaf, &Self, &Leaf<FANOUT, K, T>, Leaf);
+    create_node_get_fn!(get_leaf_mut, &mut Self, &mut Leaf<FANOUT, K, T>, Leaf);
+    create_node_get_fn!(get_interior, &Self, &Interior<FANOUT, K, T>, Interior);
+    create_node_get_fn!(get_interior_mut, &mut Self, &mut Interior<FANOUT, K, T>, Interior);
 
-        if let Node::Leaf(leaf) = self {
-            Some(leaf)
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn leaf_mut(&mut self) -> Option<&mut Leaf<K, V, FANOUT>> {
-        if let Node::Invalid = self {
-            panic!("Invalid Node encountered while accessing leaf!")
-        }
-
-        if let Node::Leaf(leaf) = self {
-            Some(leaf)
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn unwrap_leaf(&self) -> &Leaf<K, V, FANOUT> {
-        self.leaf().unwrap()
-    }
-
-    pub(super) fn unwrap_leaf_mut(&mut self) -> &mut Leaf<K, V, FANOUT> {
-        self.leaf_mut().unwrap()
-    }
-
-    pub(super) fn interior(&self) -> Option<&Interior<K, V, FANOUT>> {
-        if let Node::Invalid = self {
-            panic!("Invalid Node encountered while accessing interior!")
-        }
-
-        if let Node::Interior(interior) = self {
-            Some(interior)
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn unwrap_interior(&self) -> &Interior<K, V, FANOUT> {
-        self.interior().unwrap()
-    }
-
-    pub(super) fn interior_mut(&mut self) -> Option<&mut Interior<K, V, FANOUT>> {
-        if let Node::Invalid = self {
-            panic!("Invalid Node encountered while accessing interior!")
-        }
-
-        if let Node::Interior(interior) = self {
-            Some(interior)
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn unwrap_interior_mut(&mut self) -> &mut Interior<K, V, FANOUT> {
-        self.interior_mut().unwrap()
-    }
-
-    pub(super) fn set_parent(&mut self, parent: Option<NodeWeakPtr<K, V, FANOUT>>) {
+    pub(super) fn get_parent(&self) -> Option<NodeWeakPtr<FANOUT, K, T>> {
         match self {
-            Node::Invalid => panic!("Invalid Node encountered while setting parent"),
-            Node::Leaf(leaf) => leaf.parent = parent,
-            Node::Interior(node) => node.parent = parent,
-        }
-    }
-
-    pub(super) fn get_parent(&self) -> Option<NodeWeakPtr<K, V, FANOUT>> {
-        match self {
-            Node::Invalid => panic!("Invalid Node encountered while setting parent"),
+            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
             Node::Leaf(leaf) => leaf.parent.clone(),
-            Node::Interior(node) => node.parent.clone(),
+            Node::Interior(interior) => interior.parent.clone(),
+        }
+    }
+
+    pub(super) fn set_parent(&mut self, parent: Option<NodePtr<FANOUT, K, T>>) {
+        match self {
+            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+            Node::Leaf(leaf) => leaf.parent = parent.map(|parent| Arc::downgrade(&parent)),
+            Node::Interior(interior) => {
+                interior.parent = parent.map(|parent| Arc::downgrade(&parent))
+            }
         }
     }
 }
