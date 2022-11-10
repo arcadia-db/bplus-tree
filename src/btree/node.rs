@@ -9,8 +9,6 @@ pub type NodeWeakPtr<const FANOUT: usize, K, T> = Weak<RwLock<Node<FANOUT, K, T>
 
 pub type RecordPtr<T> = Arc<RwLock<T>>;
 
-
-
 #[derive(Debug)]
 pub struct Leaf<const FANOUT: usize, K: Key, T: Record> {
     pub num_keys: usize,
@@ -31,7 +29,8 @@ pub struct Interior<const FANOUT: usize, K: Key, T: Record> {
 
 #[derive(Default, Debug)]
 pub enum Node<const FANOUT: usize, K: Key, T: Record> {
-    #[default] Invalid,
+    #[default]
+    Invalid,
     Leaf(Leaf<FANOUT, K, T>),
     Interior(Interior<FANOUT, K, T>),
 }
@@ -45,7 +44,7 @@ macro_rules! create_node_get_fn {
                 _ => None,
             }
         }
-    }
+    };
 }
 
 impl<const FANOUT: usize, K: Key, T: Record> Node<FANOUT, K, T> {
@@ -67,7 +66,7 @@ impl<const FANOUT: usize, K: Key, T: Record> Node<FANOUT, K, T> {
             num_keys: 0,
             keys: vec![None; FANOUT],
             parent: None,
-            children: vec![None; FANOUT],
+            children: vec![None; FANOUT + 1],
         }
     }
 
@@ -88,11 +87,19 @@ impl<const FANOUT: usize, K: Key, T: Record> Node<FANOUT, K, T> {
         match self {
             Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
             Node::Leaf(leaf) => {
-                leaf.parent = if let Some(parent) = parent { Some(Arc::downgrade(&parent)) } else { None };
-            },
+                leaf.parent = if let Some(parent) = parent {
+                    Some(Arc::downgrade(&parent))
+                } else {
+                    None
+                };
+            }
             Node::Interior(interior) => {
-                interior.parent = if let Some(parent) = parent { Some(Arc::downgrade(&parent)) } else { None };
-            },
+                interior.parent = if let Some(parent) = parent {
+                    Some(Arc::downgrade(&parent))
+                } else {
+                    None
+                };
+            }
         }
     }
 }
