@@ -1,4 +1,4 @@
-use super::{typedefs::*, node::*};
+use super::{node::*, typedefs::*};
 use std::mem;
 use std::sync::{Arc, RwLock};
 
@@ -142,7 +142,13 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         }
     }
 
-    /* private */ fn insert_into_parent(&mut self, left: NodePtr<FANOUT, K, T>, key: K, right: NodePtr<FANOUT, K, T>) {
+    /* private */
+    fn insert_into_parent(
+        &mut self,
+        left: NodePtr<FANOUT, K, T>,
+        key: K,
+        right: NodePtr<FANOUT, K, T>,
+    ) {
         let left_lock = left.read().unwrap();
         let parent = left_lock.get_parent();
         drop(left_lock);
@@ -177,10 +183,7 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
 
         let mut left_idx_in_parent = 0;
         while left_idx_in_parent < parent.num_keys
-            && !Arc::ptr_eq(
-                parent.children[left_idx_in_parent].as_ref().unwrap(),
-                &left,
-            )
+            && !Arc::ptr_eq(parent.children[left_idx_in_parent].as_ref().unwrap(), &left)
         {
             left_idx_in_parent += 1
         }
@@ -233,7 +236,8 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         }
     }
 
-    /* private */ fn get_leaf_node(&self, key: &K) -> Option<NodePtr<FANOUT, K, T>> {
+    /* private */
+    fn get_leaf_node(&self, key: &K) -> Option<NodePtr<FANOUT, K, T>> {
         let mut current = self.root.clone()?;
         loop {
             let lock = current.read().ok()?;

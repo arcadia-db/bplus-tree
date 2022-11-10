@@ -1,3 +1,3 @@
-pub mod typedefs;
-mod node;
 pub mod btree;
+mod node;
+pub mod typedefs;
