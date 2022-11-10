@@ -1,24 +1,22 @@
-use std::{
-    mem::swap,
-    sync::{Arc, RwLock},
-};
+use super::{typedefs::*, node::*};
+use std::mem;
+use std::sync::{Arc, RwLock};
 
-use crate::btree::node::*;
 #[derive(Debug)]
-pub struct BPTree<K: Key, V: Record, const FANOUT: usize> {
-    root: Option<NodePtr<K, V, FANOUT>>,
+pub struct BPTree<const FANOUT: usize, K: Key, T: Record> {
+    root: Option<NodePtr<FANOUT, K, T>>,
 }
 
-impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
+impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
     pub fn new() -> Self {
-        assert!(FANOUT >= 2);
+        assert!(FANOUT > 1);
         Self { root: None }
     }
 
-    pub fn search(&self, key: &K) -> Option<RecordPtr<V>> {
+    pub fn search(&self, key: &K) -> Option<RecordPtr<T>> {
         let leaf = self.get_leaf_node(key)?;
-        let leaf_lock = leaf.read().unwrap();
-        let leaf = leaf_lock.unwrap_leaf();
+        let lock = leaf.read().ok()?;
+        let leaf = lock.get_leaf()?;
         for i in 0..leaf.num_keys {
             if *key == *leaf.keys[i].as_ref()? {
                 return Some(leaf.records[i].as_ref()?.clone());
@@ -27,42 +25,43 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
         None
     }
 
-    pub fn search_range(&self, start: &K, end: &K) -> Vec<RecordPtr<V>> {
-        let mut res = vec![];
+    pub fn search_range(&self, (start, end): (&K, &K)) -> Vec<RecordPtr<T>> {
+        assert!(end >= start);
+
+        let mut result: Vec<RecordPtr<T>> = Vec::new();
+
         let mut leaf = self.get_leaf_node(start);
         if leaf.is_none() {
-            return res;
+            return result;
         }
-        // find the position within the leaf
-        let mut i = 0;
 
+        // Find position within leaf
         let leaf_lock = leaf.as_ref().unwrap().read().unwrap();
-        let leaf_node = leaf_lock.unwrap_leaf();
+        let leaf_node = leaf_lock.get_leaf().unwrap();
 
+        let mut i = 0;
         while i < leaf_node.num_keys && leaf_node.keys[i].as_ref().unwrap() < start {
             i += 1;
         }
         if i >= leaf_node.num_keys {
-            return res;
+            return result;
         }
 
         drop(leaf_lock);
 
         while leaf.is_some() {
             let leaf_lock = leaf.as_ref().unwrap().read().unwrap();
-
-            let leaf_node = leaf_lock.unwrap_leaf();
+            let leaf_node = leaf_lock.get_leaf().unwrap();
 
             while i < leaf_node.num_keys && leaf_node.keys[i].as_ref().unwrap() <= end {
-                res.push(leaf_node.records[i].as_ref().unwrap().clone());
+                result.push(leaf_node.records[i].as_ref().unwrap().clone());
                 i += 1;
             }
-            let next = leaf_node.next.clone();
-
             if i != leaf_node.num_keys {
                 break;
             }
 
+            let next = leaf_node.next.clone();
             drop(leaf_lock);
             if next.is_none() {
                 break;
@@ -71,14 +70,14 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
             i = 0;
         }
 
-        res
+        result
     }
 
-    pub fn insert(&mut self, key: &K, record: &V) {
+    pub fn insert(&mut self, key: K, record: T) {
         // There are 3 cases for insert
 
         // 1 - key exists so just update the record
-        let searched_record = self.search(key);
+        let searched_record = self.search(&key);
         if let Some(value) = searched_record {
             let mut lock = value.write().unwrap();
             *lock = record.clone();
@@ -96,14 +95,14 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
             return;
         }
 
-        let leaf_node = self.get_leaf_node(key).unwrap();
+        let leaf_node = self.get_leaf_node(&key).unwrap();
         let mut leaf_lock = leaf_node.write().unwrap();
 
         // 3 - Insert into leaf, splitting if needed
-        let leaf = leaf_lock.unwrap_leaf_mut();
+        let leaf = leaf_lock.get_leaf_mut().unwrap();
 
         let mut insertion_idx = 0;
-        while insertion_idx < leaf.num_keys && leaf.keys[insertion_idx].as_ref().unwrap() < key {
+        while insertion_idx < leaf.num_keys && *leaf.keys[insertion_idx].as_ref().unwrap() < key {
             insertion_idx += 1
         }
 
@@ -119,12 +118,12 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
 
         // split if overflow (this is why we added 1 extra spot in the array)
         if leaf.num_keys == FANOUT {
-            let mut new_leaf: Leaf<K, V, FANOUT> = Node::new_leaf();
+            let mut new_leaf: Leaf<FANOUT, K, T> = Node::new_leaf();
             let split = FANOUT / 2;
 
             for i in split..leaf.num_keys {
-                swap(&mut new_leaf.keys[i - split], &mut leaf.keys[i]);
-                swap(&mut new_leaf.records[i - split], &mut leaf.records[i]);
+                mem::swap(&mut new_leaf.keys[i - split], &mut leaf.keys[i]);
+                mem::swap(&mut new_leaf.records[i - split], &mut leaf.records[i]);
             }
 
             new_leaf.num_keys = leaf.num_keys - split;
@@ -139,16 +138,11 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
             leaf.next = Some(Arc::downgrade(&new_leaf_node));
             drop(leaf_lock);
 
-            self.insert_into_parent(leaf_node, &new_key, new_leaf_node);
+            self.insert_into_parent(leaf_node, new_key, new_leaf_node);
         }
     }
 
-    fn insert_into_parent(
-        &mut self,
-        left: NodePtr<K, V, FANOUT>,
-        key: &K,
-        right: NodePtr<K, V, FANOUT>,
-    ) {
+    /* private */ fn insert_into_parent(&mut self, left: NodePtr<FANOUT, K, T>, key: K, right: NodePtr<FANOUT, K, T>) {
         let left_lock = left.read().unwrap();
         let parent = left_lock.get_parent();
         drop(left_lock);
@@ -156,7 +150,7 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
         // 2 cases for insert into parent
         // 1 - No parent for left/right. We need to make a new root node if there is no parent
         if parent.is_none() {
-            let mut new_node: Interior<K, V, FANOUT> = Node::new_interior();
+            let mut new_node: Interior<FANOUT, K, T> = Node::new_interior();
             new_node.keys[0] = Some(key.clone());
             new_node.children[0] = Some(left.clone());
             new_node.children[1] = Some(right.clone());
@@ -164,21 +158,21 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
             self.root = Some(Arc::new(RwLock::new(Node::Interior(new_node))));
 
             let mut left_lock = left.write().unwrap();
-            left_lock.set_parent(Some(Arc::downgrade(self.root.as_ref().unwrap())));
+            left_lock.set_parent(Some(self.root.as_ref().unwrap().clone()));
             drop(left_lock);
 
             let mut right_lock = right.write().unwrap();
-            right_lock.set_parent(Some(Arc::downgrade(self.root.as_ref().unwrap())));
+            right_lock.set_parent(Some(self.root.as_ref().unwrap().clone()));
             drop(right_lock);
             return;
         }
         let parent_node = parent.unwrap().upgrade().unwrap();
         let mut parent_lock = parent_node.write().unwrap();
-        let parent = parent_lock.unwrap_interior_mut();
+        let parent = parent_lock.get_interior_mut().unwrap();
 
         // assign right's parent pointer
         let mut right_lock = right.write().unwrap();
-        right_lock.set_parent(Some(Arc::downgrade(&parent_node)));
+        right_lock.set_parent(Some(parent_node.clone()));
         drop(right_lock);
 
         let mut left_idx_in_parent = 0;
@@ -203,18 +197,18 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
 
         // 2 - interior node has no space so we have to split it
         if parent.num_keys == FANOUT {
-            let mut new_interior: Interior<K, V, FANOUT> = Node::new_interior();
+            let mut new_interior: Interior<FANOUT, K, T> = Node::new_interior();
             let split = (FANOUT + 1) / 2 - 1;
 
             for i in split + 1..parent.num_keys {
-                swap(&mut parent.keys[i], &mut new_interior.keys[i - split - 1]);
-                swap(
+                mem::swap(&mut parent.keys[i], &mut new_interior.keys[i - split - 1]);
+                mem::swap(
                     &mut parent.children[i],
                     &mut new_interior.children[i - split - 1],
                 );
             }
             let pushed_key = parent.keys[split].as_ref().unwrap().clone();
-            swap(
+            mem::swap(
                 &mut parent.children[FANOUT],
                 &mut new_interior.children[parent.num_keys - split - 1],
             );
@@ -225,53 +219,44 @@ impl<K: Key, V: Record, const FANOUT: usize> BPTree<K, V, FANOUT> {
             new_interior.parent = parent.parent.clone();
             let new_interior_node = Arc::new(RwLock::new(Node::Interior(new_interior)));
             let new_interior_lock = new_interior_node.read().unwrap();
-            let new_interior = new_interior_lock.unwrap_interior();
+            let new_interior = new_interior_lock.get_interior().unwrap();
 
             for i in 0..new_interior.num_keys + 1 {
                 let child = new_interior.children[i].as_ref().unwrap();
                 let mut child_lock = child.write().unwrap();
-                child_lock.set_parent(Some(Arc::downgrade(&new_interior_node)));
+                child_lock.set_parent(Some(new_interior_node.clone()));
                 drop(child_lock);
             }
             drop(new_interior_lock);
             drop(parent_lock);
-            self.insert_into_parent(parent_node, &pushed_key, new_interior_node);
+            self.insert_into_parent(parent_node, pushed_key, new_interior_node);
         }
     }
 
-    /* private */
-    fn get_leaf_node(&self, key: &K) -> Option<NodePtr<K, V, FANOUT>> {
-        let mut cur = self.root.clone()?;
+    /* private */ fn get_leaf_node(&self, key: &K) -> Option<NodePtr<FANOUT, K, T>> {
+        let mut current = self.root.clone()?;
         loop {
-            let lock = cur.read().unwrap();
-            if lock.interior().is_none() {
+            let lock = current.read().ok()?;
+            if lock.get_interior().is_none() {
                 break;
             }
 
-            let mut i = 0;
             let next = {
-                let node = lock.unwrap_interior();
-
-                while i < node.num_keys && *key >= *node.keys[i].as_ref().unwrap() {
-                    i += 1
+                let mut i = 0;
+                let node = lock.get_interior()?;
+                while i < node.num_keys && *key >= *node.keys[i].as_ref()? {
+                    i += 1;
                 }
-                node.children[i].as_ref().unwrap().clone()
+                node.children[i].as_ref()?.clone()
             };
 
             drop(lock);
-            cur = next;
+            current = next;
         }
-        Some(cur)
+
+        Some(current)
     }
 }
-
-impl Key for i32 {}
-impl Key for usize {}
-
-impl Record for i32 {}
-impl Record for usize {}
-
-impl Record for String {}
 
 #[cfg(test)]
 mod tests {
@@ -281,11 +266,19 @@ mod tests {
     use std::io::BufReader;
     use std::sync::{Arc, RwLock};
 
+    impl Key for i32 {}
+    impl Key for usize {}
+
+    impl Record for i32 {}
+    impl Record for usize {}
+
+    impl Record for String {}
+
     #[test]
     fn test_search() {
         const TEST_FANOUT: usize = 2;
         // Create node (0 = "John"), (2 = "Adam")
-        let node_leaf1: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
+        let node_leaf1: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
             num_keys: 2,
             keys: vec![Some(0), Some(2)],
             records: vec![
@@ -299,7 +292,7 @@ mod tests {
         let node_leaf1_ptr = Arc::new(RwLock::new(node_leaf1));
 
         // Create node (10 = "Emily"), (12 = "Jessica")
-        let node_leaf2: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
+        let node_leaf2: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
             num_keys: 2,
             keys: vec![Some(10), Some(12)],
             records: vec![
@@ -313,7 +306,7 @@ mod tests {
         let node_leaf2_ptr = Arc::new(RwLock::new(node_leaf2));
 
         // Create node (20 = "Sam")
-        let node_leaf3: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
+        let node_leaf3: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
             num_keys: 1,
             keys: vec![Some(20), None],
             records: vec![Some(Arc::new(RwLock::new(String::from("Sam")))), None],
@@ -325,16 +318,16 @@ mod tests {
 
         // Set node_leaf1_ptr's ptr_leaf_next to node_leaf2_ptr
         let mut lock = node_leaf1_ptr.write().unwrap();
-        lock.unwrap_leaf_mut().next = Some(Arc::downgrade(&node_leaf2_ptr));
+        lock.get_leaf_mut().unwrap().next = Some(Arc::downgrade(&node_leaf2_ptr));
         drop(lock);
 
         // Set node_leaf2_ptr's ptr_leaf_next to node_leaf3_ptr
         let mut lock = node_leaf2_ptr.write().unwrap();
-        lock.unwrap_leaf_mut().next = Some(Arc::downgrade(&node_leaf3_ptr));
+        lock.get_leaf_mut().unwrap().next = Some(Arc::downgrade(&node_leaf3_ptr));
         drop(lock);
 
         // Create interior (node_leaf1_ptr, node_leaf2_ptr, node_leaf3_ptr)
-        let node_interior1: Node<i32, String, TEST_FANOUT> = Node::Interior(Interior {
+        let node_interior1: Node<TEST_FANOUT, i32, String> = Node::Interior(Interior {
             num_keys: 2,
             keys: vec![Some(10), Some(20)],
             children: vec![
@@ -347,18 +340,18 @@ mod tests {
         let node_interior1_ptr = Arc::new(RwLock::new(node_interior1));
 
         // Set all children of node_interior1's ptr_leaf_parent to node_interior1
-        let lock = node_interior1_ptr.write().unwrap();
-        for child in &lock.unwrap_interior().children {
+        let mut lock = node_interior1_ptr.write().unwrap();
+        for child in &lock.get_interior_mut().unwrap().children {
             if let Some(ptr) = child.as_ref() {
                 let mut ptr_lock = ptr.write().unwrap();
-                ptr_lock.unwrap_leaf_mut().parent = Some(Arc::downgrade(&node_interior1_ptr));
+                ptr_lock.get_leaf_mut().unwrap().parent = Some(Arc::downgrade(&node_interior1_ptr));
                 drop(ptr_lock);
             }
         }
         drop(lock);
 
         // Create B+Tree
-        let bptree1: BPTree<i32, String, TEST_FANOUT> = BPTree {
+        let bptree1: BPTree<TEST_FANOUT, i32, String> = BPTree {
             root: Some(node_interior1_ptr),
         };
 
@@ -405,7 +398,7 @@ mod tests {
         const TEST_FANOUT: usize = 2;
 
         // Create node (0 = "John"), (2 = "Adam")
-        let node_leaf1: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
+        let node_leaf1: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
             num_keys: 2,
             keys: vec![Some(0), Some(2)],
             records: vec![
@@ -419,7 +412,7 @@ mod tests {
         let node_leaf1_ptr = Arc::new(RwLock::new(node_leaf1));
 
         // Create node (10 = "Emily"), (12 = "Jessica")
-        let node_leaf2: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
+        let node_leaf2: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
             num_keys: 2,
             keys: vec![Some(10), Some(12)],
             records: vec![
@@ -433,7 +426,7 @@ mod tests {
         let node_leaf2_ptr = Arc::new(RwLock::new(node_leaf2));
 
         // Create node (20 = "Sam")
-        let node_leaf3: Node<i32, String, TEST_FANOUT> = Node::Leaf(Leaf {
+        let node_leaf3: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
             num_keys: 1,
             keys: vec![Some(20), None],
             records: vec![Some(Arc::new(RwLock::new(String::from("Sam")))), None],
@@ -445,16 +438,16 @@ mod tests {
 
         // Set node_leaf1_ptr's ptr_leaf_next to node_leaf2_ptr
         let mut lock = node_leaf1_ptr.write().unwrap();
-        lock.unwrap_leaf_mut().next = Some(Arc::downgrade(&node_leaf2_ptr));
+        lock.get_leaf_mut().unwrap().next = Some(Arc::downgrade(&node_leaf2_ptr));
         drop(lock);
 
         // Set node_leaf2_ptr's ptr_leaf_next to node_leaf3_ptr
         let mut lock = node_leaf2_ptr.write().unwrap();
-        lock.unwrap_leaf_mut().next = Some(Arc::downgrade(&node_leaf3_ptr));
+        lock.get_leaf_mut().unwrap().next = Some(Arc::downgrade(&node_leaf3_ptr));
         drop(lock);
 
         // Create interior (node_leaf1_ptr, node_leaf2_ptr, node_leaf3_ptr)
-        let node_interior1: Node<i32, String, TEST_FANOUT> = Node::Interior(Interior {
+        let node_interior1: Node<TEST_FANOUT, i32, String> = Node::Interior(Interior {
             num_keys: 2,
             keys: vec![Some(10), Some(20)],
             children: vec![
@@ -467,27 +460,27 @@ mod tests {
         let node_interior1_ptr = Arc::new(RwLock::new(node_interior1));
 
         // Set all children of node_interior1's ptr_leaf_parent to node_interior1
-        let lock = node_interior1_ptr.write().unwrap();
-        for child in &lock.unwrap_interior().children {
+        let mut lock = node_interior1_ptr.write().unwrap();
+        for child in &lock.get_interior_mut().unwrap().children {
             if let Some(ptr) = child.as_ref() {
                 let mut ptr_lock = ptr.write().unwrap();
-                ptr_lock.unwrap_leaf_mut().parent = Some(Arc::downgrade(&node_interior1_ptr));
+                ptr_lock.get_leaf_mut().unwrap().parent = Some(Arc::downgrade(&node_interior1_ptr));
                 drop(ptr_lock);
             }
         }
         drop(lock);
 
         // Create B+Tree
-        let bptree1: BPTree<i32, String, TEST_FANOUT> = BPTree {
+        let bptree1: BPTree<TEST_FANOUT, i32, String> = BPTree {
             root: Some(node_interior1_ptr),
         };
 
-        let res = bptree1.search_range(&1, &2);
+        let res = bptree1.search_range((&1, &2));
         let lock = res[0].read().unwrap();
         assert_eq!(*lock, "Adam");
         drop(lock);
 
-        let res = bptree1.search_range(&0, &2);
+        let res = bptree1.search_range((&0, &2));
         let lock = res[0].read().unwrap();
         assert_eq!(*lock, "John");
         drop(lock);
@@ -495,7 +488,7 @@ mod tests {
         assert_eq!(*lock, "Adam");
         drop(lock);
 
-        let res = bptree1.search_range(&2, &12);
+        let res = bptree1.search_range((&2, &12));
         let lock = res[0].read().unwrap();
         assert_eq!(*lock, "Adam");
         drop(lock);
@@ -509,9 +502,9 @@ mod tests {
 
     #[test]
     fn test_insert() {
-        let mut bptree: BPTree<i32, String, 3> = BPTree::new();
-        bptree.insert(&3, &String::from("Emily"));
-        bptree.insert(&5, &String::from("Srihari"));
+        let mut bptree: BPTree<3, i32, String> = BPTree::new();
+        bptree.insert(3, String::from("Emily"));
+        bptree.insert(5, String::from("Srihari"));
 
         let res = bptree.search(&3).unwrap();
         let lock = res.read().unwrap();
@@ -524,20 +517,20 @@ mod tests {
         drop(lock);
 
         // update value of 5
-        bptree.insert(&5, &String::from("Cool"));
+        bptree.insert(5, String::from("Cool"));
         let res = bptree.search(&5).unwrap();
         let lock = res.read().unwrap();
         assert_eq!(*lock, "Cool");
         drop(lock);
 
         // this should trigger a leaf split, and create a new root node
-        bptree.insert(&7, &String::from("Rajat"));
+        bptree.insert(7, String::from("Rajat"));
         let res = bptree.search(&7).unwrap();
         let lock = res.read().unwrap();
         assert_eq!(*lock, "Rajat");
         drop(lock);
 
-        bptree.insert(&4, &String::from("Erik"));
+        bptree.insert(4, String::from("Erik"));
         let res = bptree.search(&4).unwrap();
         let lock = res.read().unwrap();
         assert_eq!(*lock, "Erik");
@@ -545,13 +538,13 @@ mod tests {
 
         // This causes a new leaf node and adding a key to the root internal node
         // println!("{:#?}", bptree);
-        bptree.insert(&14, &String::from("Golden"));
+        bptree.insert(14, String::from("Golden"));
         let res = bptree.search(&14).unwrap();
         let lock = res.read().unwrap();
         assert_eq!(*lock, "Golden");
         drop(lock);
 
-        bptree.insert(&16, &String::from("Backpack"));
+        bptree.insert(16, String::from("Backpack"));
         let res = bptree.search(&16).unwrap();
         let lock = res.read().unwrap();
         assert_eq!(*lock, "Backpack");
@@ -560,19 +553,19 @@ mod tests {
 
     #[test]
     fn test_insert_sequential() {
-        let mut bptree: BPTree<i32, String, 3> = BPTree::new();
-        bptree.insert(&0, &String::from("Srihari"));
-        bptree.insert(&1, &String::from("Vishnu"));
-        bptree.insert(&2, &String::from("Rajat"));
-        bptree.insert(&3, &String::from("Patwari"));
-        bptree.insert(&4, &String::from("Golden"));
+        let mut bptree: BPTree<3, i32, String> = BPTree::new();
+        bptree.insert(0, String::from("Srihari"));
+        bptree.insert(1, String::from("Vishnu"));
+        bptree.insert(2, String::from("Rajat"));
+        bptree.insert(3, String::from("Patwari"));
+        bptree.insert(4, String::from("Golden"));
 
         let res = bptree.search(&4).unwrap();
         let lock = res.read().unwrap();
         assert_eq!(*lock, "Golden");
         drop(lock);
 
-        let res = bptree.search_range(&1, &4);
+        let res = bptree.search_range((&1, &4));
 
         let expected = ["Vishnu", "Rajat", "Patwari", "Golden"];
 
@@ -648,10 +641,10 @@ mod tests {
     fn sizes_helper(keys: &Vec<usize>, values: &Vec<usize>, expected: &Vec<usize>, verify: bool) {
         macro_rules! SIZES_TEST {
             ($size: expr, $optimize: expr) => {
-                let mut bptree: BPTree<usize, usize, $size> = BPTree::new();
+                let mut bptree: BPTree<$size, usize, usize> = BPTree::new();
 
                 for i in 0..keys.len() {
-                    bptree.insert(&keys[i], &values[i]);
+                    bptree.insert(keys[i], values[i]);
                     let start = if verify { 0 } else { i };
 
                     if (!$optimize) {
@@ -664,7 +657,7 @@ mod tests {
                     }
                 }
 
-                let res = bptree.search_range(&0, &(std::usize::MAX - 1));
+                let res = bptree.search_range((&0, &(std::usize::MAX - 1)));
                 assert_eq!(res.len(), expected.len());
 
                 for i in 0..res.len() {
