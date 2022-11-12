@@ -31,6 +31,7 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         let mut result: Vec<RecordPtr<T>> = Vec::new();
 
         let mut leaf = self.get_leaf_node(start);
+        // the only case the leaf is none is if the root node is None (empty tree)
         if leaf.is_none() {
             return result;
         }
@@ -43,10 +44,6 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         while i < leaf_node.num_keys && leaf_node.keys[i].as_ref().unwrap() < start {
             i += 1;
         }
-        if i >= leaf_node.num_keys {
-            return result;
-        }
-
         drop(leaf_lock);
 
         while leaf.is_some() {
@@ -54,10 +51,13 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
             let leaf_node = leaf_lock.get_leaf().unwrap();
 
             while i < leaf_node.num_keys && leaf_node.keys[i].as_ref().unwrap() <= end {
-                result.push(leaf_node.records[i].as_ref().unwrap().clone());
+                if leaf_node.keys[i].as_ref().unwrap() >= start {
+                    result.push(leaf_node.records[i].as_ref().unwrap().clone());
+                }
                 i += 1;
             }
             if i != leaf_node.num_keys {
+                drop(leaf_lock);
                 break;
             }
 
@@ -141,6 +141,8 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
             self.insert_into_parent(leaf_node, new_key, new_leaf_node);
         }
     }
+
+    pub fn remove(&mut self, key: &K) {}
 
     /* private */
     fn insert_into_parent(
@@ -240,7 +242,7 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
     fn get_leaf_node(&self, key: &K) -> Option<NodePtr<FANOUT, K, T>> {
         let mut current = self.root.clone()?;
         loop {
-            let lock = current.read().ok()?;
+            let lock = current.read().unwrap();
             if lock.get_interior().is_none() {
                 break;
             }
@@ -505,6 +507,220 @@ mod tests {
     }
 
     #[test]
+    fn test_range_search_2() {
+        let mut bptree: BPTree<3, i32, String> = BPTree::new();
+        bptree.insert(3, String::from("a"));
+        bptree.insert(5, String::from("b"));
+        bptree.insert(1, String::from("c"));
+
+        assert_eq!(
+            bptree
+                .search_range((&2, &7))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<String>>(),
+            vec![String::from("a"), String::from("b")],
+        );
+
+        bptree.insert(4, String::from("d"));
+        assert_eq!(
+            bptree
+                .search_range((&2, &7))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<String>>(),
+            vec![String::from("a"), String::from("d"), String::from("b")],
+        );
+
+        let mut bptree: BPTree<3, i32, i32> = BPTree::new();
+        bptree.insert(1, 1);
+        bptree.insert(2, 2);
+        bptree.insert(4, 4);
+        bptree.insert(9, 9);
+        bptree.insert(15, 15);
+        bptree.insert(18, 18);
+        bptree.insert(19, 19);
+        bptree.insert(21, 21);
+        bptree.insert(34, 34);
+        bptree.insert(121, 121);
+
+        // search with both bounds in tree
+        assert_eq!(
+            bptree
+                .search_range((&2, &18))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![2, 4, 9, 15, 18],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&18, &34))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![18, 19, 21, 34],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&18, &18))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![18],
+        );
+
+        // search with start in tree and end not in tree
+        assert_eq!(
+            bptree
+                .search_range((&2, &24))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![2, 4, 9, 15, 18, 19, 21],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&18, &20))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![18, 19],
+        );
+
+        // search with start not in tree but end in tree
+        assert_eq!(
+            bptree
+                .search_range((&5, &18))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![9, 15, 18],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&0, &9))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![1, 2, 4, 9],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&0, &9))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![1, 2, 4, 9],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&16, &21))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![18, 19, 21],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&16, &21))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![18, 19, 21],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&16, &21))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![18, 19, 21],
+        );
+
+        // search with both bounds not in tree
+        assert_eq!(
+            bptree
+                .search_range((&16, &22))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![18, 19, 21],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&35, &123))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![121],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&3, &17))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![4, 9, 15],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&20, &35))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![21, 34],
+        );
+
+        // search outside the range of the interval (empty)
+        assert_eq!(
+            bptree
+                .search_range((&-5, &0))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![],
+        );
+
+        assert_eq!(
+            bptree
+                .search_range((&122, &156))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<i32>>(),
+            vec![],
+        );
+    }
+
+    #[test]
+    fn test_range_search_3() {
+        let mut bptree: BPTree<3, i32, String> = BPTree::new();
+        bptree.insert(3, "John".into());
+        bptree.insert(6, "Emily".into());
+        bptree.insert(9, "Sam".into());
+
+        assert_eq!(
+            bptree
+                .search_range((&5, &10))
+                .iter()
+                .map(|item| item.try_read().unwrap().clone())
+                .collect::<Vec<String>>(),
+            vec![String::from("Emily"), String::from("Sam")],
+        );
+    }
+
+    #[test]
     fn test_insert() {
         let mut bptree: BPTree<3, i32, String> = BPTree::new();
         bptree.insert(3, String::from("Emily"));
@@ -582,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_stress() {
+    fn test_insert_large() {
         let keys = vec![
             4, 56, 81, 71, 57, 62, 12, 91, 31, 58, 92, 37, 61, 11, 98, 75, 17, 35, 36, 23, 39, 95,
             42, 78, 38, 13, 30, 34, 84, 69, 54, 50, 99, 43, 2, 83, 28, 27, 19, 45, 32, 80, 3, 47,
@@ -618,28 +834,32 @@ mod tests {
         sizes_helper(&keys, &values, &expected, false);
     }
 
-    #[test]
-    fn test_insert_stress_2() {
-        let (keys, values, expected) =
-            read_from_file(String::from("src/btree/golden/stress_test_2.golden"));
-        sizes_helper(&keys, &values, &expected, false);
-    }
+    #[cfg(feature = "stress")]
+    mod stress_tests {
+        use super::*;
+        #[test]
+        fn test_insert_stress() {
+            let (keys, values, expected) =
+                read_from_file(String::from("src/btree/golden/stress_test_2.golden"));
+            sizes_helper(&keys, &values, &expected, false);
+        }
 
-    fn read_from_file(file_name: String) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
-        let file = File::open(file_name).expect("file wasn't found.");
-        let reader = BufReader::new(file);
-        let numbers: Vec<usize> = reader
-            .lines()
-            .map(|line| line.unwrap().parse::<usize>().unwrap())
-            .collect();
+        fn read_from_file(file_name: String) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+            let file = File::open(file_name).expect("file wasn't found.");
+            let reader = BufReader::new(file);
+            let numbers: Vec<usize> = reader
+                .lines()
+                .map(|line| line.unwrap().parse::<usize>().unwrap())
+                .collect();
 
-        let n = numbers[0];
+            let n = numbers[0];
 
-        (
-            numbers[1..n + 1].to_vec(),
-            numbers[n + 1..2 * n + 1].to_vec(),
-            numbers[2 * n + 1..numbers.len()].to_vec(),
-        )
+            (
+                numbers[1..n + 1].to_vec(),
+                numbers[n + 1..2 * n + 1].to_vec(),
+                numbers[2 * n + 1..numbers.len()].to_vec(),
+            )
+        }
     }
 
     fn sizes_helper(keys: &[usize], values: &[usize], expected: &[usize], verify: bool) {
