@@ -612,11 +612,11 @@ mod tests {
 
         assert_eq!(
             bptree
-                .search_range((&0, &9))
+                .search_range((&14, &34))
                 .iter()
                 .map(|item| item.try_read().unwrap().clone())
                 .collect::<Vec<i32>>(),
-            vec![1, 2, 4, 9],
+            vec![15, 18, 19, 21, 34],
         );
 
         assert_eq!(
@@ -630,20 +630,11 @@ mod tests {
 
         assert_eq!(
             bptree
-                .search_range((&16, &21))
+                .search_range((&3, &15))
                 .iter()
                 .map(|item| item.try_read().unwrap().clone())
                 .collect::<Vec<i32>>(),
-            vec![18, 19, 21],
-        );
-
-        assert_eq!(
-            bptree
-                .search_range((&16, &21))
-                .iter()
-                .map(|item| item.try_read().unwrap().clone())
-                .collect::<Vec<i32>>(),
-            vec![18, 19, 21],
+            vec![4, 9, 15],
         );
 
         // search with both bounds not in tree
