@@ -95,34 +95,6 @@ impl<const FANOUT: usize, K: Key, V: Record> Node<FANOUT, K, V> {
     }
 }
 
-pub trait LockInClosure<T> {
-    fn safe_read<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&T) -> R;
-
-    fn safe_write<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut T) -> R;
-}
-
-impl<T> LockInClosure<T> for Option<Arc<RwLock<T>>> {
-    fn safe_read<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&T) -> R,
-    {
-        let lock = self.as_ref().unwrap().read().unwrap();
-        f(&*lock)
-    }
-
-    fn safe_write<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut T) -> R,
-    {
-        let mut lock = self.as_ref().unwrap().write().unwrap();
-        f(&mut *lock)
-    }
-}
-
 impl<const FANOUT: usize, K: Key, V: Record> fmt::Debug for Node<FANOUT, K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
