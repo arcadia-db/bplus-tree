@@ -20,10 +20,10 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
     pub fn search(&self, key: &K) -> Option<RecordPtr<V>> {
         let leaf = self.get_leaf_node(key)?;
         let lock = leaf.read().unwrap();
-        let leaf = lock.get_leaf()?;
+        let leaf = lock.get_leaf().unwrap();
         for i in 0..leaf.num_keys {
-            if *key == *leaf.keys[i].as_ref()? {
-                return Some(leaf.records[i].as_ref()?.clone());
+            if *key == *leaf.keys[i].as_ref().unwrap() {
+                return Some(leaf.records[i].as_ref().unwrap().clone());
             }
         }
         None
