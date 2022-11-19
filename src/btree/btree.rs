@@ -3,19 +3,19 @@ use std::mem;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug)]
-pub struct BPTree<const FANOUT: usize, K: Key, T: Record> {
-    root: Option<NodePtr<FANOUT, K, T>>,
+pub struct BPTree<const FANOUT: usize, K: Key, V: Record> {
+    root: Option<NodePtr<FANOUT, K, V>>,
 }
 
-impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
+impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
     pub fn new() -> Self {
         assert!(FANOUT > 1);
         Self { root: None }
     }
 
-    pub fn search(&self, key: &K) -> Option<RecordPtr<T>> {
+    pub fn search(&self, key: &K) -> Option<RecordPtr<V>> {
         let leaf = self.get_leaf_node(key)?;
-        let lock = leaf.read().ok()?;
+        let lock = leaf.read().unwrap();
         let leaf = lock.get_leaf()?;
         for i in 0..leaf.num_keys {
             if *key == *leaf.keys[i].as_ref()? {
@@ -25,10 +25,10 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         None
     }
 
-    pub fn search_range(&self, (start, end): (&K, &K)) -> Vec<RecordPtr<T>> {
+    pub fn search_range(&self, (start, end): (&K, &K)) -> Vec<RecordPtr<V>> {
         assert!(end >= start);
 
-        let mut result: Vec<RecordPtr<T>> = Vec::new();
+        let mut result: Vec<RecordPtr<V>> = Vec::new();
 
         let mut leaf = self.get_leaf_node(start);
         // the only case the leaf is none is if the root node is None (empty tree)
@@ -73,7 +73,7 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         result
     }
 
-    pub fn insert(&mut self, key: K, record: T) {
+    pub fn insert(&mut self, key: K, record: V) {
         // There are 3 cases for insert
 
         // 1 - key exists so just update the record
@@ -118,7 +118,7 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
 
         // split if overflow (this is why we added 1 extra spot in the array)
         if leaf.num_keys == FANOUT {
-            let mut new_leaf: Leaf<FANOUT, K, T> = Node::new_leaf();
+            let mut new_leaf: Leaf<FANOUT, K, V> = Node::new_leaf();
             let split = FANOUT / 2;
 
             for i in split..leaf.num_keys {
@@ -142,14 +142,142 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         }
     }
 
-    pub fn remove(&mut self, key: &K) {}
+    pub fn remove(&mut self, key: &K) {
+        let leaf = self.get_leaf_node(key);
+        if leaf.is_none() {
+            return;
+        }
+        let leaf_node = leaf.as_ref().unwrap();
+        let mut leaf_lock = leaf_node.as_ref().write().ok().unwrap();
+        let leaf = leaf_lock.get_leaf_mut().unwrap();
+        let mut i = 0;
+        while i < leaf.num_keys && leaf.keys[i].as_ref().unwrap() != key {
+            i += 1;
+        }
+        if i == leaf.num_keys {
+            return;
+        }
+
+        leaf.keys[i] = None;
+        leaf.records[i] = None;
+        for j in i..leaf.num_keys - 1 {
+            leaf.keys.swap(j, j + 1);
+            leaf.records.swap(j, j + 1);
+        }
+        leaf.num_keys -= 1;
+
+        // leaf is the root node
+        if leaf.parent.is_none() {
+            if leaf.num_keys == 0 {
+                self.root = None;
+            }
+            return;
+        }
+
+        if leaf.num_keys >= (FANOUT / 2) {
+            return;
+        }
+
+        let parent_node = leaf.parent.as_ref().unwrap().upgrade().unwrap();
+        let mut parent_lock = parent_node.write().ok().unwrap();
+        let parent = parent_lock.get_interior_mut().unwrap();
+
+        let mut i = 0;
+        while i <= parent.num_keys && !Arc::ptr_eq(&leaf_node, parent.children[i].as_ref().unwrap())
+        {
+            i += 1;
+        }
+        // we have too few keys in the node
+        let (discriminator_key, sibling_node) = if i < parent.num_keys {
+            (
+                parent.keys[i].clone().unwrap(),
+                parent.children[i + 1].as_ref().unwrap(),
+            )
+        } else {
+            (
+                parent.keys[i - 1].clone().unwrap(),
+                parent.children[i - 1].as_ref().unwrap(),
+            )
+        };
+
+        // we have too few keys in the node
+        let mut sibling_lock = sibling_node.write().ok().unwrap();
+        let sibling = sibling_lock.get_leaf_mut().unwrap();
+        let (first, second) = if i < parent.num_keys {
+            (leaf, sibling)
+        } else {
+            (sibling, leaf)
+        };
+
+        // keys can fit into one node so let's merge
+        if first.num_keys + second.num_keys <= FANOUT - 1 {
+            for i in 0..second.num_keys {
+                mem::swap(&mut first.keys[i + first.num_keys], &mut second.keys[i]);
+                mem::swap(
+                    &mut first.records[i + first.num_keys],
+                    &mut second.records[i],
+                );
+            }
+            first.num_keys = first.num_keys + second.num_keys;
+            first.next = second.next.clone();
+            second.prev = None;
+
+            let right_child = if i < parent.num_keys {
+                sibling_node.clone()
+            } else {
+                leaf_node.clone()
+            };
+            drop(leaf_lock);
+            drop(sibling_lock);
+            drop(parent_lock);
+            self.remove_from_parent(parent_node, &right_child);
+        }
+        // otherwise, we can borrow one from the other node
+        else {
+            // borrow from second
+            if first.num_keys < second.num_keys {
+                mem::swap(&mut first.keys[first.num_keys], &mut second.keys[0]);
+                mem::swap(&mut first.records[first.num_keys], &mut second.records[0]);
+                for i in 1..second.num_keys {
+                    second.keys.swap(i - 1, i);
+                    second.records.swap(i - 1, i);
+                }
+                first.num_keys += 1;
+                second.num_keys -= 1;
+            }
+            // borrow from first
+            else {
+                let mut i = second.num_keys;
+                while i > 0 {
+                    second.keys.swap(i, i - 1);
+                    second.records.swap(i, i - 1);
+                    i -= 1;
+                }
+                mem::swap(&mut second.keys[0], &mut first.keys[first.num_keys - 1]);
+                mem::swap(
+                    &mut second.records[0],
+                    &mut first.records[first.num_keys - 1],
+                );
+                first.num_keys -= 1;
+                second.num_keys += 1;
+            };
+
+            // replace the key in parent
+            for parent_key in &mut parent.keys {
+                if *parent_key.as_ref().unwrap() == discriminator_key {
+                    parent_key.replace(first.keys[first.num_keys - 1].clone().unwrap());
+                    break;
+                }
+            }
+        }
+    }
 
     /* private */
     fn insert_into_parent(
         &mut self,
-        left: NodePtr<FANOUT, K, T>,
+        left: NodePtr<FANOUT, K, V>,
         key: K,
-        right: NodePtr<FANOUT, K, T>,
+        right: NodePtr<FANOUT, K, V>,
     ) {
         let left_lock = left.read().unwrap();
         let parent = left_lock.get_parent();
@@ -158,7 +286,7 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         // 2 cases for insert into parent
         // 1 - No parent for left/right. We need to make a new root node if there is no parent
         if parent.is_none() {
-            let mut new_node: Interior<FANOUT, K, T> = Node::new_interior();
+            let mut new_node: Interior<FANOUT, K, V> = Node::new_interior();
             new_node.keys[0] = Some(key);
             new_node.children[0] = Some(left.clone());
             new_node.children[1] = Some(right.clone());
@@ -202,7 +330,7 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
 
         // 2 - interior node has no space so we have to split it
         if parent.num_keys == FANOUT {
-            let mut new_interior: Interior<FANOUT, K, T> = Node::new_interior();
+            let mut new_interior: Interior<FANOUT, K, V> = Node::new_interior();
             let split = (FANOUT + 1) / 2 - 1;
 
             for i in split + 1..parent.num_keys {
@@ -238,8 +366,168 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
         }
     }
 
+    fn remove_from_parent(
+        &mut self,
+        node: NodePtr<FANOUT, K, V>,
+        right_child: &NodePtr<FANOUT, K, V>,
+    ) {
+        let mut interior_lock = node.write().ok().unwrap();
+        let mut interior = interior_lock.get_interior_mut().unwrap();
+        let mut right_child_idx = 0;
+        while right_child_idx <= interior.num_keys
+            && !Arc::ptr_eq(
+                &interior.children[right_child_idx].as_ref().unwrap(),
+                right_child,
+            )
+        {
+            right_child_idx += 1;
+        }
+        assert_ne!(right_child_idx, interior.num_keys + 1);
+
+        interior.keys[right_child_idx - 1] = None;
+        interior.children[right_child_idx] = None;
+        for j in right_child_idx - 1..interior.num_keys - 1 {
+            interior.keys.swap(j, j + 1);
+            interior.children.swap(j + 1, j + 2);
+        }
+        interior.num_keys -= 1;
+
+        // interior is the root node
+        if interior.parent.is_none() {
+            if interior.num_keys == 0 {
+                self.root = interior.children[0].clone();
+                drop(interior_lock);
+                let mut root_lock = self.root.as_ref().unwrap().write().ok().unwrap();
+                root_lock.set_parent(None);
+            }
+            return;
+        }
+
+        if interior.num_keys >= ((FANOUT + 1) / 2 - 1) {
+            return;
+        }
+
+        let parent_node = interior.parent.as_ref().unwrap().upgrade().unwrap();
+        let mut parent_lock = parent_node.write().ok().unwrap();
+        let parent = parent_lock.get_interior_mut().unwrap();
+
+        let mut i = 0;
+        while i <= parent.num_keys && !Arc::ptr_eq(&node, parent.children[i].as_ref().unwrap()) {
+            i += 1;
+        }
+        // we have too few keys in the node
+        let (discriminator_key_2, sibling_node) = if i < parent.num_keys {
+            (
+                parent.keys[i].clone().unwrap(),
+                parent.children[i + 1].as_ref().unwrap(),
+            )
+        } else {
+            (
+                parent.keys[i - 1].clone().unwrap(),
+                parent.children[i - 1].as_ref().unwrap(),
+            )
+        };
+        let mut sibling_lock = sibling_node.write().ok().unwrap();
+        let sibling = sibling_lock.get_interior_mut().unwrap();
+        let (first, second) = if i < parent.num_keys {
+            (interior, sibling)
+        } else {
+            (sibling, interior)
+        };
+
+        // we can borrow a key from one the other node
+        if first.num_keys >= (FANOUT + 1) / 2 || second.num_keys >= (FANOUT + 1) / 2 {
+            let replacement_key;
+            // borrow from second (the interior node in question is predecessor)
+            if first.num_keys < second.num_keys {
+                first.keys[first.num_keys] = Some(discriminator_key_2.clone());
+                mem::swap(
+                    &mut first.children[first.num_keys + 1],
+                    &mut second.children[0],
+                );
+
+                let child = first.children[first.num_keys + 1].as_ref().unwrap();
+                let mut child_lock = child.write().ok().unwrap();
+                child_lock.set_parent(Some(node.clone()));
+                drop(child_lock);
+
+                replacement_key = second.keys[0].clone();
+                second.keys[0] = None;
+                for i in 1..second.num_keys {
+                    second.keys.swap(i - 1, i);
+                    second.children.swap(i - 1, i);
+                }
+                second.children.swap(second.num_keys - 1, second.num_keys);
+                first.num_keys += 1;
+                second.num_keys -= 1;
+            }
+            // borrow from first (the interior node in question is the successor)
+            else {
+                let mut i = second.num_keys;
+                second.children.swap(second.num_keys + 1, second.num_keys);
+                while i > 0 {
+                    second.keys.swap(i, i - 1);
+                    second.children.swap(i, i - 1);
+                    i -= 1;
+                }
+                replacement_key = first.keys[first.num_keys - 1].clone();
+                first.keys[first.num_keys - 1] = None;
+                second.keys[0] = Some(discriminator_key_2.clone());
+                mem::swap(&mut second.children[0], &mut first.children[first.num_keys]);
+                let child = second.children[0].as_ref().unwrap();
+                let mut child_lock = child.write().ok().unwrap();
+                child_lock.set_parent(Some(node.clone()));
+                drop(child_lock);
+
+                first.num_keys -= 1;
+                second.num_keys += 1;
+            };
+
+            // replace the key in parent
+            for parent_key in &mut parent.keys {
+                if *parent_key.as_ref().unwrap() == discriminator_key_2 {
+                    parent_key.replace(replacement_key.clone().unwrap());
+                    break;
+                }
+            }
+        }
+        // keys can fit into one node so let's merge
+        else {
+            first.keys[first.num_keys] = Some(discriminator_key_2.clone());
+            for j in 0..second.num_keys {
+                mem::swap(&mut first.keys[j + first.num_keys + 1], &mut second.keys[j]);
+            }
+            for j in 0..second.num_keys + 1 {
+                mem::swap(
+                    &mut first.children[j + first.num_keys + 1],
+                    &mut second.children[j],
+                );
+                let child_node = first.children[j + first.num_keys + 1].as_ref().unwrap();
+                let mut child_lock = child_node.write().ok().unwrap();
+
+                if i < parent.num_keys {
+                    child_lock.set_parent(Some(node.clone()));
+                } else {
+                    child_lock.set_parent(Some(sibling_node.clone()));
+                }
+                drop(child_lock);
+            }
+
+            let right_child = if i < parent.num_keys {
+                sibling_node.clone()
+            } else {
+                node.clone()
+            };
+            first.num_keys = first.num_keys + second.num_keys + 1;
+            drop(sibling_lock);
+            drop(interior_lock);
+            drop(parent_lock);
+            self.remove_from_parent(parent_node, &right_child);
+        }
+    }
+
     /* private */
-    fn get_leaf_node(&self, key: &K) -> Option<NodePtr<FANOUT, K, T>> {
+    fn get_leaf_node(&self, key: &K) -> Option<NodePtr<FANOUT, K, V>> {
         let mut current = self.root.clone()?;
         loop {
             let lock = current.read().unwrap();
@@ -249,11 +537,11 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
 
             let next = {
                 let mut i = 0;
-                let node = lock.get_interior()?;
-                while i < node.num_keys && *key >= *node.keys[i].as_ref()? {
+                let node = lock.get_interior().unwrap();
+                while i < node.num_keys && *key >= *node.keys[i].as_ref().unwrap() {
                     i += 1;
                 }
-                node.children[i].as_ref()?.clone()
+                node.children[i].as_ref().unwrap().clone()
             };
 
             drop(lock);
@@ -267,9 +555,6 @@ impl<const FANOUT: usize, K: Key, T: Record> BPTree<FANOUT, K, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::File;
-    use std::io::BufRead;
-    use std::io::BufReader;
     use std::sync::{Arc, RwLock};
 
     impl Key for i32 {}
@@ -814,7 +1099,7 @@ mod tests {
             61, 67, 3, 26, 69, 77, 73, 78, 3, 12,
         ];
 
-        sizes_helper(&keys, &values, &expected, true);
+        sizes_insert_helper(&keys, &values, &expected, true);
     }
 
     #[test]
@@ -822,17 +1107,146 @@ mod tests {
         let keys: Vec<usize> = vec![9, 7, 1, 7, 4, 5, 5, 2, 1, 9];
         let values: Vec<usize> = vec![89, 3, 54, 90, 19, 2, 44, 85, 94, 10];
         let expected: Vec<usize> = vec![94, 85, 19, 44, 90, 10];
-        sizes_helper(&keys, &values, &expected, false);
+        sizes_insert_helper(&keys, &values, &expected, false);
+    }
+
+    #[test]
+    fn test_remove_simple() {
+        let mut bptree: BPTree<3, i32, i32> = BPTree::new();
+
+        // root is leaf and remove remaining key results in empty tree
+        bptree.insert(4, 4);
+        bptree.remove(&4);
+        assert!(bptree.root.is_none());
+
+        bptree.insert(5, 5);
+        bptree.insert(4, 4);
+        bptree.remove(&4);
+        assert!(bptree.search(&4).is_none());
+        bptree.search(&5).safe_read(|val| assert_eq!(*val, 5));
+
+        // root is full
+        bptree.insert(4, 4);
+
+        // trigger split
+        bptree.insert(6, 6);
+        bptree
+            .root
+            .safe_read(|node| assert_eq!(node.get_interior().unwrap().num_keys, 1));
+        bptree.remove(&6);
+        assert!(bptree.search(&6).is_none());
+        bptree.remove(&5);
+        bptree
+            .root
+            .safe_read(|node| assert_eq!(node.get_leaf().unwrap().num_keys, 1));
+    }
+
+    #[test]
+    fn test_remove() {
+        let mut bptree: BPTree<3, i32, i32> = BPTree::new();
+        bptree.insert(1, 1);
+        bptree.insert(2, 2);
+        bptree.insert(5, 5);
+        bptree.insert(3, 3);
+        bptree.insert(4, 4);
+        bptree.insert(8, 8);
+        bptree.insert(10, 10);
+        bptree.insert(14, 14);
+        bptree.insert(19, 19);
+
+        bptree.remove(&10329);
+        // println!("Nice{:#?}\n", bptree.root);
+        bptree.remove(&14);
+        assert!(bptree.search(&14).is_none());
+        // println!("Nice{:#?}\n", bptree.root);
+        bptree.remove(&10);
+        assert!(bptree.search(&10).is_none());
+        println!("Nice{:#?}\n", bptree.root);
+
+        bptree.search(&8).safe_read(|val| assert_eq!(*val, 8));
+        bptree.search(&19).safe_read(|val| assert_eq!(*val, 19));
+        bptree.remove(&19);
+        assert!(bptree.search(&19).is_none());
+        bptree.search(&8).safe_read(|val| assert_eq!(*val, 8));
+        bptree.remove(&8);
+        assert!(bptree.search(&8).is_none());
+    }
+
+    #[test]
+    fn test_remove_2() {
+        let values = [6, 7, 4, 9, 8, 1];
+        let mut bptree = BPTree::<3, i32, i32>::new();
+
+        for value in values {
+            bptree.insert(value, value);
+        }
+
+        let removal_order = [1, 4, 7, 6, 8, 9];
+        for i in 0..removal_order.len() {
+            let removal = removal_order[i];
+            bptree.remove(&removal);
+            assert!(bptree.search(&removal).is_none());
+
+            for j in i + 1..removal_order.len() {
+                assert_eq!(
+                    bptree
+                        .search(&removal_order[j])
+                        .safe_read(|val| val.clone()),
+                    removal_order[j]
+                )
+            }
+        }
+    }
+
+    #[test]
+    fn test_remove_3() {
+        let values = vec![
+            59, 88, 83, 41, 76, 62, 72, 29, 74, 70, 23, 84, 51, 98, 73, 93, 66, 17, 16, 9, 35, 27,
+            13, 40, 56, 77, 60, 90, 53, 42, 50, 92, 64, 4, 52, 39, 61, 21, 32, 45, 68, 20, 18, 6,
+            15, 34, 31, 69, 82, 14, 3, 48, 71, 28, 54, 12, 46, 33, 19, 79, 7, 11, 80, 47, 25, 86,
+            43, 1, 78, 36, 91, 26, 58, 8, 57, 87, 24, 67, 30, 65, 38, 99, 10, 75, 55, 22, 63, 95,
+            96, 97, 0, 37, 89, 85, 5, 94, 44, 81, 2, 49,
+        ];
+        let mut bptree: BPTree<3, i32, i32> = BPTree::new();
+        for value in values {
+            bptree.insert(value, value)
+        }
+
+        let removal_order = [
+            52, 62, 40, 93, 89, 29, 74, 49, 79, 54, 11, 82, 84, 76, 87, 69, 48, 5, 66, 28, 31, 44,
+            73, 22, 59, 12, 0, 24, 21, 7, 61, 2, 71, 6, 19, 17, 85, 33, 8, 42, 96, 88, 38, 67, 60,
+            9, 45, 95, 94, 51, 4, 99, 37, 83, 15, 81, 50, 23, 57, 68, 53, 92, 26, 39, 34, 86, 10,
+            1, 90, 80, 46, 27, 91, 97, 77, 75, 18, 30, 63, 78, 14, 43, 16, 32, 35, 72, 20, 64, 41,
+            47, 55, 58, 13, 98, 70, 25, 56, 65, 36, 3,
+        ];
+
+        for i in 0..removal_order.len() {
+            let removal = removal_order[i];
+            bptree.remove(&removal);
+            assert!(bptree.search(&removal).is_none());
+
+            for j in i + 1..removal_order.len() {
+                assert_eq!(
+                    bptree
+                        .search(&removal_order[j])
+                        .safe_read(|val| val.clone()),
+                    removal_order[j]
+                )
+            }
+        }
     }
 
     #[cfg(feature = "stress")]
     mod stress_tests {
         use super::*;
+        use std::fs::File;
+        use std::io::BufRead;
+        use std::io::BufReader;
         #[test]
         fn test_insert_stress() {
             let (keys, values, expected) =
                 read_from_file(String::from("src/btree/golden/stress_test_2.golden"));
-            sizes_helper(&keys, &values, &expected, false);
+            sizes_insert_helper(&keys, &values, &expected, false);
         }
 
         fn read_from_file(file_name: String) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
@@ -853,7 +1267,7 @@ mod tests {
         }
     }
 
-    fn sizes_helper(keys: &[usize], values: &[usize], expected: &[usize], verify: bool) {
+    fn sizes_insert_helper(keys: &[usize], values: &[usize], expected: &[usize], verify: bool) {
         macro_rules! SIZES_TEST {
             ($size: expr, $optimize: expr) => {
                 let mut bptree: BPTree<$size, usize, usize> = BPTree::new();
