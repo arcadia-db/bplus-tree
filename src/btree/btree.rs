@@ -22,6 +22,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
                 return Some(leaf.records[i].as_ref()?.clone());
             }
         }
+        // println!("{:#?}", leaf.parent.as_ref()?.upgrade());
         None
     }
 
@@ -174,14 +175,17 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             return;
         }
 
-        if leaf.num_keys >= (FANOUT / 2) {
+        if leaf.num_keys >= (FANOUT - 1) / 2 {
             return;
         }
 
         let parent_node = leaf.parent.as_ref().unwrap().upgrade().unwrap();
         let mut parent_lock = parent_node.write().ok().unwrap();
         let parent = parent_lock.get_interior_mut().unwrap();
-
+        if parent.num_keys == 0 {
+            println!("{:#?}", parent);
+        }
+        debug_assert!(parent.num_keys > 0);
         let mut i = 0;
         while i <= parent.num_keys && !Arc::ptr_eq(&leaf_node, parent.children[i].as_ref().unwrap())
         {
@@ -265,7 +269,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             // replace the key in parent
             for parent_key in &mut parent.keys {
                 if *parent_key.as_ref().unwrap() == discriminator_key {
-                    parent_key.replace(first.keys[first.num_keys - 1].clone().unwrap());
+                    parent_key.replace(second.keys[0].clone().unwrap());
                     break;
                 }
             }
@@ -382,7 +386,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         {
             right_child_idx += 1;
         }
-        assert_ne!(right_child_idx, interior.num_keys + 1);
+        debug_assert_ne!(right_child_idx, interior.num_keys + 1);
 
         interior.keys[right_child_idx - 1] = None;
         interior.children[right_child_idx] = None;
@@ -403,7 +407,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             return;
         }
 
-        if interior.num_keys >= ((FANOUT + 1) / 2 - 1) {
+        if interior.num_keys >= FANOUT / 2 {
             return;
         }
 
@@ -460,6 +464,8 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
                 second.children.swap(second.num_keys - 1, second.num_keys);
                 first.num_keys += 1;
                 second.num_keys -= 1;
+                debug_assert!(first.num_keys > 0);
+                debug_assert!(second.num_keys > 0);
             }
             // borrow from first (the interior node in question is the successor)
             else {
@@ -481,6 +487,8 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
 
                 first.num_keys -= 1;
                 second.num_keys += 1;
+                debug_assert!(first.num_keys > 0);
+                debug_assert!(second.num_keys > 0);
             };
 
             // replace the key in parent
@@ -519,6 +527,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
                 node.clone()
             };
             first.num_keys = first.num_keys + second.num_keys + 1;
+            debug_assert!(first.num_keys > 0);
             drop(sibling_lock);
             drop(interior_lock);
             drop(parent_lock);
@@ -1107,6 +1116,8 @@ mod tests {
         let keys: Vec<usize> = vec![9, 7, 1, 7, 4, 5, 5, 2, 1, 9];
         let values: Vec<usize> = vec![89, 3, 54, 90, 19, 2, 44, 85, 94, 10];
         let expected: Vec<usize> = vec![94, 85, 19, 44, 90, 10];
+
+        // since there are repeated keys, keep the verify as false
         sizes_insert_helper(&keys, &values, &expected, false);
     }
 
@@ -1200,16 +1211,16 @@ mod tests {
 
     #[test]
     fn test_remove_3() {
-        let values = vec![
+        let values: Vec<usize> = vec![
             59, 88, 83, 41, 76, 62, 72, 29, 74, 70, 23, 84, 51, 98, 73, 93, 66, 17, 16, 9, 35, 27,
             13, 40, 56, 77, 60, 90, 53, 42, 50, 92, 64, 4, 52, 39, 61, 21, 32, 45, 68, 20, 18, 6,
             15, 34, 31, 69, 82, 14, 3, 48, 71, 28, 54, 12, 46, 33, 19, 79, 7, 11, 80, 47, 25, 86,
             43, 1, 78, 36, 91, 26, 58, 8, 57, 87, 24, 67, 30, 65, 38, 99, 10, 75, 55, 22, 63, 95,
             96, 97, 0, 37, 89, 85, 5, 94, 44, 81, 2, 49,
         ];
-        let mut bptree: BPTree<3, i32, i32> = BPTree::new();
-        for value in values {
-            bptree.insert(value, value)
+        let mut bptree: BPTree<3, usize, usize> = BPTree::new();
+        for value in &values {
+            bptree.insert(*value, *value)
         }
 
         let removal_order = [
@@ -1234,6 +1245,8 @@ mod tests {
                 )
             }
         }
+
+        sizes_remove_helper(&values, true);
     }
 
     #[cfg(feature = "stress")]
@@ -1243,13 +1256,55 @@ mod tests {
         use std::io::BufRead;
         use std::io::BufReader;
         #[test]
-        fn test_insert_stress() {
+        fn test_insert_stress_1() {
             let (keys, values, expected) =
-                read_from_file(String::from("src/btree/golden/stress_test_2.golden"));
+                read_from_insert_file(String::from("src/btree/golden/stress_test_insert_1.golden"));
+            sizes_insert_helper(&keys, &values, &expected, false);
+        }
+        #[test]
+        fn test_insert_stress_2() {
+            let (keys, values, expected) =
+                read_from_insert_file(String::from("src/btree/golden/stress_test_insert_2.golden"));
+            sizes_insert_helper(&keys, &values, &expected, false);
+        }
+        #[test]
+        fn test_insert_stress_3() {
+            let (keys, values, expected) =
+                read_from_insert_file(String::from("src/btree/golden/stress_test_insert_3.golden"));
             sizes_insert_helper(&keys, &values, &expected, false);
         }
 
-        fn read_from_file(file_name: String) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+        #[test]
+        fn test_remove_stress_1() {
+            let values =
+                read_from_remove_file(String::from("src/btree/golden/stress_test_remove_1.golden"));
+
+            sizes_remove_helper(&values, false);
+            let a = &values[0..values.len() / 200];
+            sizes_remove_helper(a, true);
+        }
+
+        #[test]
+        fn test_remove_stress_2() {
+            let values =
+                read_from_remove_file(String::from("src/btree/golden/stress_test_remove_2.golden"));
+
+            sizes_remove_helper(&values, false);
+            let a = &values[0..values.len() / 200];
+            sizes_remove_helper(a, true);
+        }
+
+        #[test]
+        fn test_remove_stress_3() {
+            let values =
+                read_from_remove_file(String::from("src/btree/golden/stress_test_remove_3.golden"));
+
+            sizes_remove_helper(&values, false);
+            let a = &values[0..values.len() / 200];
+            sizes_remove_helper(a, true);
+        }
+
+        fn read_from_insert_file(file_name: String) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
             let file = File::open(file_name).expect("file wasn't found.");
             let reader = BufReader::new(file);
             let numbers: Vec<usize> = reader
@@ -1265,24 +1320,31 @@ mod tests {
                 numbers[2 * n + 1..numbers.len()].to_vec(),
             )
         }
+
+        fn read_from_remove_file(file_name: String) -> Vec<usize> {
+            let file = File::open(file_name).expect("file wasn't found.");
+            let reader = BufReader::new(file);
+            reader
+                .lines()
+                .map(|line| line.unwrap().parse::<usize>().unwrap())
+                .collect()
+        }
     }
 
     fn sizes_insert_helper(keys: &[usize], values: &[usize], expected: &[usize], verify: bool) {
         macro_rules! SIZES_TEST {
-            ($size: expr, $optimize: expr) => {
+            ($size: expr) => {
                 let mut bptree: BPTree<$size, usize, usize> = BPTree::new();
 
                 for i in 0..keys.len() {
                     bptree.insert(keys[i], values[i]);
                     let start = if verify { 0 } else { i };
 
-                    if (!$optimize) {
-                        for j in start..=i {
-                            let res = bptree.search(&keys[j]).unwrap();
-                            let lock = res.read().unwrap();
-                            assert_eq!(*lock, values[j]);
-                            drop(lock);
-                        }
+                    for j in start..=i {
+                        let res = bptree.search(&keys[j]).unwrap();
+                        let lock = res.read().unwrap();
+                        assert_eq!(*lock, values[j]);
+                        drop(lock);
                     }
                 }
 
@@ -1296,11 +1358,44 @@ mod tests {
                 }
             };
         }
-        SIZES_TEST!(5, false);
-        SIZES_TEST!(6, false);
-        SIZES_TEST!(7, false);
-        SIZES_TEST!(22, false);
-        SIZES_TEST!(255, false);
-        SIZES_TEST!(2, false);
+        SIZES_TEST!(5);
+        SIZES_TEST!(6);
+        SIZES_TEST!(7);
+        SIZES_TEST!(22);
+        SIZES_TEST!(255);
+        SIZES_TEST!(2);
+    }
+
+    fn sizes_remove_helper(values: &[usize], verify: bool) {
+        macro_rules! SIZES_TEST {
+            ($size: expr) => {
+                let mut bptree: BPTree<$size, usize, usize> = BPTree::new();
+                for value in values {
+                    bptree.insert(*value, *value);
+                    bptree.search(value).safe_read(|val| assert_eq!(val, value));
+                }
+                for i in 0..values.len() {
+                    let value = &values[i];
+                    bptree.remove(value);
+                    assert!(bptree.search(value).is_none());
+
+                    if verify {
+                        for j in i + 1..values.len() {
+                            assert_eq!(
+                                bptree.search(&values[j]).safe_read(|val| val.clone()),
+                                values[j]
+                            )
+                        }
+                    }
+                }
+            };
+        }
+
+        SIZES_TEST!(5);
+        SIZES_TEST!(6);
+        SIZES_TEST!(7);
+        SIZES_TEST!(22);
+        SIZES_TEST!(255);
+        SIZES_TEST!(2);
     }
 }
