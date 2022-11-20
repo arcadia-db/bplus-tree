@@ -185,10 +185,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         let parent_node = leaf.parent.as_ref().unwrap().upgrade().unwrap();
         let mut parent_lock = parent_node.write().ok().unwrap();
         let parent = parent_lock.get_interior_mut().unwrap();
-        if parent.num_keys == 0 {
-            println!("{:#?}", parent);
-        }
-        debug_assert!(parent.num_keys > 0);
+
         let mut i = 0;
         while i <= parent.num_keys && !Arc::ptr_eq(&leaf_node, parent.children[i].as_ref().unwrap())
         {
