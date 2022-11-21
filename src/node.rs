@@ -76,6 +76,14 @@ impl<const FANOUT: usize, K: Key, V: Record> Node<FANOUT, K, V> {
     create_node_get_fn!(get_interior, &Self, &Interior<FANOUT, K, V>, Interior);
     create_node_get_fn!(get_interior_mut, &mut Self, &mut Interior<FANOUT, K, V>, Interior);
 
+    pub(super) fn is_interior(&self) -> bool {
+        match self {
+            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+            Node::Interior(_) => true,
+            _ => false,
+        }
+    }
+
     pub(super) fn get_parent(&self) -> Option<NodeWeakPtr<FANOUT, K, V>> {
         match self {
             Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
@@ -84,13 +92,45 @@ impl<const FANOUT: usize, K: Key, V: Record> Node<FANOUT, K, V> {
         }
     }
 
-    pub(super) fn set_parent(&mut self, parent: Option<NodePtr<FANOUT, K, V>>) {
+    pub(super) fn set_parent(&mut self, parent: Option<&NodePtr<FANOUT, K, V>>) {
         match self {
             Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
-            Node::Leaf(leaf) => leaf.parent = parent.map(|parent| Arc::downgrade(&parent)),
+            Node::Leaf(leaf) => leaf.parent = parent.map(|parent| Arc::downgrade(parent)),
             Node::Interior(interior) => {
                 interior.parent = parent.map(|parent| Arc::downgrade(&parent))
             }
+        }
+    }
+
+    pub(super) fn is_underfull(&self) -> bool {
+        match self {
+            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+            Node::Leaf(leaf) => leaf.num_keys < (FANOUT - 1) / 2,
+            Node::Interior(interior) => interior.num_keys < (FANOUT + 1) / 2,
+        }
+    }
+
+    pub(super) fn is_full(&self) -> bool {
+        match self {
+            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+            Node::Leaf(leaf) => leaf.num_keys >= FANOUT - 1,
+            Node::Interior(interior) => interior.num_keys >= FANOUT - 1,
+        }
+    }
+
+    pub(super) fn has_space_for_insert(&self) -> bool {
+        match self {
+            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+            Node::Leaf(leaf) => leaf.num_keys < FANOUT - 1,
+            Node::Interior(interior) => interior.num_keys < FANOUT - 1,
+        }
+    }
+
+    pub(super) fn has_space_for_removal(&self) -> bool {
+        match self {
+            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+            Node::Leaf(leaf) => leaf.num_keys > (FANOUT - 1) / 2,
+            Node::Interior(interior) => interior.num_keys >= FANOUT / 2 + 1,
         }
     }
 }
