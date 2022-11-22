@@ -22,13 +22,6 @@ impl<'a, const FANOUT: usize, K: Key, V: Record> TraversalSharedResult<'a, FANOU
             self.retained_nodes.remove(0);
         }
     }
-
-    pub fn release_leaf(&mut self) {
-        if !self.retained_locks.is_empty() {
-            drop(self.retained_locks.pop());
-            self.retained_nodes.pop();
-        }
-    }
 }
 
 pub struct TraversalExclusiveResult<'a, const FANOUT: usize, K: Key, V: Record> {

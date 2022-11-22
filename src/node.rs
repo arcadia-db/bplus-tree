@@ -15,7 +15,6 @@ pub struct Leaf<const FANOUT: usize, K: Key, V: Record> {
     pub num_keys: usize,
     pub keys: Vec<Option<K>>,
     pub records: Vec<Option<RecordPtr<V>>>,
-    pub parent: Option<NodeWeakPtr<FANOUT, K, V>>,
     pub prev: Option<NodeWeakPtr<FANOUT, K, V>>,
     pub next: Option<NodeWeakPtr<FANOUT, K, V>>,
 }
@@ -24,7 +23,6 @@ pub struct Leaf<const FANOUT: usize, K: Key, V: Record> {
 pub struct Interior<const FANOUT: usize, K: Key, V: Record> {
     pub num_keys: usize,
     pub keys: Vec<Option<K>>,
-    pub parent: Option<NodeWeakPtr<FANOUT, K, V>>,
     pub children: Vec<Option<NodePtr<FANOUT, K, V>>>,
 }
 
@@ -55,7 +53,6 @@ impl<const FANOUT: usize, K: Key, V: Record> Node<FANOUT, K, V> {
             num_keys: 0,
             keys: vec![None; FANOUT],
             records: vec![None; FANOUT],
-            parent: None,
             prev: None,
             next: None,
         }
@@ -66,7 +63,6 @@ impl<const FANOUT: usize, K: Key, V: Record> Node<FANOUT, K, V> {
         Interior {
             num_keys: 0,
             keys: vec![None; FANOUT],
-            parent: None,
             children: vec![None; FANOUT + 1],
         }
     }
@@ -81,24 +77,6 @@ impl<const FANOUT: usize, K: Key, V: Record> Node<FANOUT, K, V> {
             Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
             Node::Interior(_) => true,
             _ => false,
-        }
-    }
-
-    pub(super) fn get_parent(&self) -> Option<NodeWeakPtr<FANOUT, K, V>> {
-        match self {
-            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
-            Node::Leaf(leaf) => leaf.parent.clone(),
-            Node::Interior(interior) => interior.parent.clone(),
-        }
-    }
-
-    pub(super) fn set_parent(&mut self, parent: Option<&NodePtr<FANOUT, K, V>>) {
-        match self {
-            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
-            Node::Leaf(leaf) => leaf.parent = parent.map(|parent| Arc::downgrade(parent)),
-            Node::Interior(interior) => {
-                interior.parent = parent.map(|parent| Arc::downgrade(&parent))
-            }
         }
     }
 
