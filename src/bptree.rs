@@ -19,7 +19,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
     }
 
     pub fn search(&self, key: &K) -> Option<RecordPtr<V>> {
-        let mut leaf_traversal = self.get_leaf_shared(key);
+        let mut leaf_traversal = Self::get_leaf_shared(self.root.clone(), key);
         if leaf_traversal.retained_locks.is_empty() {
             return None;
         }
@@ -41,7 +41,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
 
         let mut result: Vec<RecordPtr<V>> = Vec::new();
 
-        let mut traversal = self.get_leaf_shared(start);
+        let mut traversal = Self::get_leaf_shared(self.root.clone(), start);
         // the only case the traversal is empty is if the root node is None (empty tree)
         if traversal.retained_locks.is_empty() {
             return result;
@@ -98,7 +98,8 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         }
 
         // optimistic latching
-        let (mut node_history, mut lock_history) = self.get_leaf_optimistic(&key, false);
+        let (mut node_history, mut lock_history) =
+            Self::get_leaf_optimistic(self.root.clone(), &key, false);
         let leaf_node = node_history.pop().unwrap();
         let mut leaf_lock = lock_history.pop().unwrap();
         drop(node_history);
@@ -159,7 +160,8 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             return;
         }
         // optimistic latching
-        let (mut node_history, mut lock_history) = self.get_leaf_optimistic(key, true);
+        let (mut node_history, mut lock_history) =
+            Self::get_leaf_optimistic(self.root.clone(), key, true);
         let leaf_node = node_history.pop().unwrap();
         let mut leaf_lock = lock_history.pop().unwrap();
 
@@ -554,12 +556,15 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
     }
 
     /* private */
-    fn get_leaf_shared(&self, key: &K) -> TraversalSharedResult<FANOUT, K, V> {
-        if self.root.is_none() {
+    fn get_leaf_shared<'a>(
+        root: Option<NodePtr<FANOUT, K, V>>,
+        key: &K,
+    ) -> TraversalSharedResult<'a, FANOUT, K, V> {
+        if root.is_none() {
             return TraversalSharedResult::empty();
         }
-        let mut current_node = self.root.clone().unwrap();
-        let mut lock = self.root.as_ref().unwrap().read().unwrap();
+        let mut current_node = root.clone().unwrap();
+        let mut lock = root.as_ref().unwrap().read().unwrap();
         let mut lock_history = vec![];
         let mut node_history = vec![];
 
@@ -601,16 +606,16 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         }
     }
 
-    fn get_leaf_exclusive(
-        &self,
+    fn get_leaf_exclusive<'a>(
+        root: Option<NodePtr<FANOUT, K, V>>,
         key: &K,
         for_removal: bool,
-    ) -> TraversalExclusiveResult<FANOUT, K, V> {
-        if self.root.is_none() {
+    ) -> TraversalExclusiveResult<'a, FANOUT, K, V> {
+        if root.is_none() {
             return TraversalExclusiveResult::empty();
         }
-        let mut current_node = self.root.clone().unwrap();
-        let mut lock = self.root.as_ref().unwrap().write().unwrap();
+        let mut current_node = root.clone().unwrap();
+        let mut lock = root.as_ref().unwrap().write().unwrap();
         let mut lock_history = Vec::new();
         let mut node_history = Vec::new();
 
@@ -655,20 +660,20 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         }
     }
 
-    fn get_leaf_optimistic(
-        &self,
+    fn get_leaf_optimistic<'a>(
+        root: Option<NodePtr<FANOUT, K, V>>,
         key: &K,
         for_removal: bool,
     ) -> (
         Vec<Arc<RwLock<Node<FANOUT, K, V>>>>,
-        Vec<RwLockWriteGuard<Node<FANOUT, K, V>>>,
+        Vec<RwLockWriteGuard<'a, Node<FANOUT, K, V>>>,
     ) {
-        let mut leaf_traversal_optimistic = self.get_leaf_shared(key);
+        let mut leaf_traversal_optimistic = Self::get_leaf_shared(root.clone(), key);
         let leaf = leaf_traversal_optimistic.retained_locks.last().unwrap();
         // if the leaf will require a split / merge
         if for_removal && leaf.is_underfull() || !for_removal && leaf.is_full() {
             drop(leaf_traversal_optimistic);
-            let leaf_traversal_exclusive = self.get_leaf_exclusive(key, for_removal);
+            let leaf_traversal_exclusive = Self::get_leaf_exclusive(root.clone(), key, for_removal);
             (
                 leaf_traversal_exclusive.retained_nodes,
                 leaf_traversal_exclusive.retained_locks,
