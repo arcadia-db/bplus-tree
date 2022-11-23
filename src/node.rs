@@ -108,7 +108,7 @@ impl<const FANOUT: usize, K: Key, V: Record> Node<FANOUT, K, V> {
         match self {
             Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
             Node::Leaf(leaf) => leaf.num_keys > (FANOUT - 1) / 2,
-            Node::Interior(interior) => interior.num_keys >= FANOUT / 2 + 1,
+            Node::Interior(interior) => interior.num_keys > FANOUT / 2,
         }
     }
 }
@@ -128,11 +128,7 @@ impl<const FANOUT: usize, K: Key, V: Record> fmt::Debug for Node<FANOUT, K, V> {
                     records.push(match r {
                         Some(val) => {
                             let lock = val.try_read().ok();
-                            if lock.is_none() {
-                                None
-                            } else {
-                                Some(lock.unwrap().clone())
-                            }
+                            lock
                         }
                         None => None,
                     })
@@ -158,11 +154,7 @@ impl<const FANOUT: usize, K: Key, V: Record> fmt::Debug for Node<FANOUT, K, V> {
                     children.push(match r {
                         Some(val) => {
                             let lock = val.try_read().ok();
-                            if lock.is_none() {
-                                None
-                            } else {
-                                Some(lock.unwrap().clone())
-                            }
+                            lock
                         }
                         None => None,
                     })

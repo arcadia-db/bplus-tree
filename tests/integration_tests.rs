@@ -72,7 +72,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&2, &18))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![2, 4, 9, 15, 18],
     );
@@ -81,7 +81,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&18, &34))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![18, 19, 21, 34],
     );
@@ -90,7 +90,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&18, &18))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![18],
     );
@@ -100,7 +100,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&2, &24))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![2, 4, 9, 15, 18, 19, 21],
     );
@@ -109,7 +109,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&18, &20))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![18, 19],
     );
@@ -119,7 +119,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&5, &18))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![9, 15, 18],
     );
@@ -128,7 +128,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&0, &9))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![1, 2, 4, 9],
     );
@@ -137,7 +137,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&14, &34))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![15, 18, 19, 21, 34],
     );
@@ -146,7 +146,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&16, &21))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![18, 19, 21],
     );
@@ -155,7 +155,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&3, &15))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![4, 9, 15],
     );
@@ -165,7 +165,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&16, &22))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![18, 19, 21],
     );
@@ -174,7 +174,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&35, &123))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![121],
     );
@@ -183,7 +183,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&3, &17))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![4, 9, 15],
     );
@@ -192,7 +192,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&20, &35))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![21, 34],
     );
@@ -202,7 +202,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&-5, &0))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![],
     );
@@ -211,7 +211,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&122, &156))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| *item.try_read().unwrap())
             .collect::<Vec<i32>>(),
         vec![],
     );
@@ -430,7 +430,7 @@ fn test_remove_2() {
             assert_eq!(
                 bptree
                     .search(&removal_order[j])
-                    .safe_read(|val| val.clone()),
+                    .safe_read(|val| *val),
                 removal_order[j]
             )
         }
@@ -468,7 +468,7 @@ fn test_remove_3() {
             assert_eq!(
                 bptree
                     .search(&removal_order[j])
-                    .safe_read(|val| val.clone()),
+                    .safe_read(|val| *val),
                 removal_order[j]
             )
         }
