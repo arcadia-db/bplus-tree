@@ -1,6 +1,7 @@
 use super::typedefs::*;
 use core::fmt;
-use std::sync::{Arc, RwLock, Weak};
+use parking_lot::RwLock;
+use std::sync::{Arc, Weak};
 
 const INVALID_NODE_ERROR_MESSAGE: &str = "Invalid node encountered!";
 
@@ -80,21 +81,21 @@ impl<const FANOUT: usize, K: Key, V: Record> Node<FANOUT, K, V> {
         }
     }
 
-    pub(super) fn is_underfull(&self) -> bool {
-        match self {
-            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
-            Node::Leaf(leaf) => leaf.num_keys < (FANOUT - 1) / 2,
-            Node::Interior(interior) => interior.num_keys < (FANOUT + 1) / 2,
-        }
-    }
+    // pub(super) fn is_underfull(&self) -> bool {
+    //     match self {
+    //         Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+    //         Node::Leaf(leaf) => leaf.num_keys < (FANOUT - 1) / 2,
+    //         Node::Interior(interior) => interior.num_keys < FANOUT / 2,
+    //     }
+    // }
 
-    pub(super) fn is_full(&self) -> bool {
-        match self {
-            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
-            Node::Leaf(leaf) => leaf.num_keys >= FANOUT - 1,
-            Node::Interior(interior) => interior.num_keys >= FANOUT - 1,
-        }
-    }
+    // pub(super) fn is_overfull(&self) -> bool {
+    //     match self {
+    //         Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+    //         Node::Leaf(leaf) => leaf.num_keys >= FANOUT,
+    //         Node::Interior(interior) => interior.num_keys >= FANOUT,
+    //     }
+    // }
 
     pub(super) fn has_space_for_insert(&self) -> bool {
         match self {
@@ -126,10 +127,7 @@ impl<const FANOUT: usize, K: Key, V: Record> fmt::Debug for Node<FANOUT, K, V> {
                 let mut records = vec![];
                 for r in &leaf.records[..leaf.records.len() - 1] {
                     records.push(match r {
-                        Some(val) => {
-                            let lock = val.try_read().ok();
-                            lock
-                        }
+                        Some(val) => val.try_read(),
                         None => None,
                     })
                 }
@@ -152,10 +150,7 @@ impl<const FANOUT: usize, K: Key, V: Record> fmt::Debug for Node<FANOUT, K, V> {
                 let mut children = vec![];
                 for r in &node.children[..node.children.len() - 1] {
                     children.push(match r {
-                        Some(val) => {
-                            let lock = val.try_read().ok();
-                            lock
-                        }
+                        Some(val) => val.try_read(),
                         None => None,
                     })
                 }

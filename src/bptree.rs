@@ -1,5 +1,7 @@
 use super::{conc::*, node::*, typedefs::*};
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
+use std::time::Duration;
 use std::{mem, vec};
 
 #[derive(Debug)]
@@ -19,15 +21,9 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
     }
 
     pub fn search(&self, key: &K) -> Option<RecordPtr<V>> {
-        let mut leaf_traversal = Self::get_leaf_shared(self.root.clone(), key);
-        if leaf_traversal.is_empty() {
-            return None;
-        }
-        if leaf_traversal.len() > 1 {
-            leaf_traversal.remove(0);
-        }
-        let latch = leaf_traversal.pop().unwrap();
-        let lock = latch.lock;
+        let leaf_traversal = Self::get_leaf_shared(self.root.clone(), key);
+        leaf_traversal.as_ref()?;
+        let lock = leaf_traversal.unwrap().lock;
         let leaf = lock.get_leaf().unwrap();
         for i in 0..leaf.num_keys {
             if *key == *leaf.keys[i].as_ref().unwrap() {
@@ -47,19 +43,15 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         loop {
             let mut result: Vec<RecordPtr<V>> = Vec::new();
 
-            let mut traversal = Self::get_leaf_shared(self.root.clone(), start);
-            // the only case the traversal is empty is if the root node is None (empty tree)
-            if traversal.is_empty() {
+            let traversal = Self::get_leaf_shared(self.root.clone(), start);
+            // the only case the traversal is none is if the root node is None (empty tree)
+            if traversal.is_none() {
                 return result;
             }
-            if traversal.len() > 1 {
-                traversal.remove(0);
-            }
 
-            let latch = traversal.pop().unwrap();
+            let latch = traversal.unwrap();
             let mut leaf = Some(latch.node);
             let mut leaf_lock = latch.lock;
-            drop(traversal);
 
             // Find position within leaf
             let mut leaf_node = leaf_lock.get_leaf().unwrap();
@@ -86,16 +78,16 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
                     let _temp_lock = leaf_lock;
 
                     // attempt next result retrieval
-                    let cur_lock_attempt = leaf.as_ref().unwrap().try_read_wait();
-                    match cur_lock_attempt {
-                        Ok(guard) => {
-                            leaf_lock = unsafe { mem::transmute(guard) };
-                            leaf_node = leaf_lock.get_leaf().unwrap();
-                        }
-                        Err(_) => break,
+                    let cur_lock_attempt = leaf
+                        .as_ref()
+                        .unwrap()
+                        .try_upgradable_read_arc_for(Duration::from_nanos(50));
+                    if let Some(guard) = cur_lock_attempt {
+                        leaf_lock = guard;
+                        leaf_node = leaf_lock.get_leaf().unwrap();
+                    } else {
+                        break;
                     }
-
-                    drop(_temp_lock);
                 } else {
                     return result;
                 }
@@ -116,8 +108,9 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         }
 
         // optimistic latching
-        let mut ancestor_latches = Self::get_leaf_optimistic(self.root.clone(), &key, false);
-        let ExclusiveLatch {
+        let mut ancestor_latches =
+            Self::get_leaf_optimistic(self.root.clone(), &key, |node| node.has_space_for_insert());
+        let ExclusiveLatchInfo {
             lock: mut leaf_lock,
             node: leaf_node,
         } = ancestor_latches.pop().unwrap();
@@ -176,9 +169,10 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             return;
         }
         // optimistic latching
-        let mut ancestor_latches = Self::get_leaf_optimistic(self.root.clone(), key, true);
+        let mut ancestor_latches =
+            Self::get_leaf_optimistic(self.root.clone(), key, |node| node.has_space_for_removal());
 
-        let ExclusiveLatch {
+        let ExclusiveLatchInfo {
             lock: mut leaf_lock,
             node: leaf_node,
         } = ancestor_latches.pop().unwrap();
@@ -212,7 +206,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             return;
         }
 
-        let ExclusiveLatch {
+        let ExclusiveLatchInfo {
             lock: mut parent_lock,
             node: parent_node,
         } = ancestor_latches.pop().unwrap();
@@ -237,7 +231,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         };
 
         // we have too few keys in the node
-        let mut sibling_lock = sibling_node.write().unwrap();
+        let mut sibling_lock = sibling_node.write();
         let sibling = sibling_lock.get_leaf_mut().unwrap();
         let (first, second) = if i < parent.num_keys {
             (leaf, sibling)
@@ -266,7 +260,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             drop(leaf_lock);
             drop(sibling_lock);
 
-            ancestor_latches.push(ExclusiveLatch {
+            ancestor_latches.push(ExclusiveLatchInfo {
                 lock: parent_lock,
                 node: parent_node,
             });
@@ -318,7 +312,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         left: NodePtr<FANOUT, K, V>,
         key: K,
         right: NodePtr<FANOUT, K, V>,
-        mut ancestor_latches: Vec<ExclusiveLatch<FANOUT, K, V>>,
+        mut ancestor_latches: Vec<ExclusiveLatchInfo<FANOUT, K, V>>,
     ) {
         // 2 cases for insert into parent
         // 1 - No parent for left/right. We need to make a new root node if there is no parent
@@ -331,7 +325,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             self.root = Some(Arc::new(RwLock::new(Node::Interior(new_node))));
             return;
         }
-        let ExclusiveLatch {
+        let ExclusiveLatchInfo {
             lock: mut parent_lock,
             node: parent_node,
         } = ancestor_latches.pop().unwrap();
@@ -384,9 +378,9 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
     fn remove_from_parent(
         &mut self,
         right_child: &NodePtr<FANOUT, K, V>,
-        mut ancestor_latches: Vec<ExclusiveLatch<FANOUT, K, V>>,
+        mut ancestor_latches: Vec<ExclusiveLatchInfo<FANOUT, K, V>>,
     ) {
-        let ExclusiveLatch {
+        let ExclusiveLatchInfo {
             lock: mut interior_lock,
             node: interior_node,
         } = ancestor_latches.pop().unwrap();
@@ -423,7 +417,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             return;
         }
 
-        let ExclusiveLatch {
+        let ExclusiveLatchInfo {
             lock: mut parent_lock,
             node: parent_node,
         } = ancestor_latches.pop().unwrap();
@@ -449,7 +443,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         };
 
         // acquiring this lock is safe since the parent has a write lock
-        let mut sibling_lock = sibling_node.write().ok().unwrap();
+        let mut sibling_lock = sibling_node.write();
         let sibling = sibling_lock.get_interior_mut().unwrap();
         let (first, second) = if i < parent.num_keys {
             (interior, sibling)
@@ -529,7 +523,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             first.num_keys = first.num_keys + second.num_keys + 1;
             drop(sibling_lock);
             drop(interior_lock);
-            ancestor_latches.push(ExclusiveLatch {
+            ancestor_latches.push(ExclusiveLatchInfo {
                 lock: parent_lock,
                 node: parent_node,
             });
@@ -538,71 +532,49 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
     }
 
     /* private */
-    fn get_leaf_shared<'a>(
+    fn get_leaf_shared(
         root: Option<NodePtr<FANOUT, K, V>>,
         key: &K,
-    ) -> Vec<SharedLatch<'a, FANOUT, K, V>> {
-        if root.is_none() {
-            return Vec::new();
-        }
-        let mut current_node = root.clone().unwrap();
-        let mut lock = root.as_ref().unwrap().read().unwrap();
-        let mut latches: Vec<SharedLatch<FANOUT, K, V>> = Vec::new();
+    ) -> Option<SharedLatchInfo<FANOUT, K, V>> {
+        root.as_ref()?;
+        let mut current_node = root.unwrap();
+        let mut lock = current_node.upgradable_read_arc();
 
         while lock.is_interior() {
-            // Keep the data in node around by holding on to this `Arc`.
-            let old_node = current_node;
-
             current_node = {
                 let mut i = 0;
                 let node = lock.get_interior().unwrap();
                 while i < node.num_keys && *key >= *node.keys[i].as_ref().unwrap() {
                     i += 1;
                 }
-                node.children[i].as_ref().unwrap().clone()
+                node.children[i].clone().unwrap()
             };
 
-            let old_lock = lock;
-
-            // lock the next node
-            // We are going to move out of node while this lock is still around,
-            // but since we kept the data around it's ok.
-            lock = unsafe { mem::transmute(current_node.read().unwrap()) };
-
-            // for shared
-            // the only lock we want in the lock history in the end
-            // is the parent of the leaf if it exists
-            if !lock.is_interior() {
-                latches.push(SharedLatch {
-                    lock: old_lock,
-                    node: old_node,
-                });
-            }
+            let _old_lock = lock;
+            lock = current_node.upgradable_read_arc();
         }
-
-        latches.push(SharedLatch {
-            lock,
+        Some(SharedLatchInfo {
             node: current_node,
-        });
-
-        unsafe { mem::transmute(latches) }
+            lock,
+        })
     }
 
-    fn get_leaf_exclusive<'a>(
+    fn get_leaf_exclusive<F>(
         root: Option<NodePtr<FANOUT, K, V>>,
         key: &K,
-        for_removal: bool,
-    ) -> Vec<ExclusiveLatch<'a, FANOUT, K, V>> {
+        clear_ancestors_latches: F,
+    ) -> Vec<ExclusiveLatchInfo<FANOUT, K, V>>
+    where
+        F: Fn(&Node<FANOUT, K, V>) -> bool,
+    {
         if root.is_none() {
             return Vec::new();
         }
-        let mut current_node = root.clone().unwrap();
-        let mut lock = root.as_ref().unwrap().write().unwrap();
-
-        let mut latches: Vec<ExclusiveLatch<FANOUT, K, V>> = Vec::new();
+        let mut current_node = root.unwrap();
+        let mut lock = current_node.write_arc();
+        let mut latches: Vec<ExclusiveLatchInfo<FANOUT, K, V>> = Vec::new();
 
         while lock.is_interior() {
-            // Keep the data in node around by holding on to this `Arc`.
             let old_node = current_node;
             current_node = {
                 let mut i = 0;
@@ -613,61 +585,49 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
                 node.children[i].as_ref().unwrap().clone()
             };
 
-            // lock_history.push(lock);
-            latches.push(ExclusiveLatch {
+            latches.push(ExclusiveLatchInfo {
                 lock,
                 node: old_node,
             });
 
-            // lock the next node
-            // We are going to move out of node while this lock is still around,
-            // but since we kept the data around it's ok.
-            lock = unsafe { mem::transmute(current_node.write().unwrap()) };
+            lock = current_node.write_arc();
 
-            // for exclusive
             // if we are sure that this node will not undergo any
             // structural changes, we can release the latches on all ancestors
-            if for_removal && lock.has_space_for_removal()
-                || !for_removal && lock.has_space_for_insert()
-            {
+            // if for_removal && lock.has_space_for_removal()
+            //     || !for_removal && lock.has_space_for_insert()
+            if clear_ancestors_latches(&lock) {
                 // TODO: check that locks are dropped in order
                 latches.clear();
             }
         }
 
-        latches.push(ExclusiveLatch {
+        latches.push(ExclusiveLatchInfo {
             lock,
             node: current_node,
         });
-        unsafe { mem::transmute(latches) }
+        latches
     }
 
-    fn get_leaf_optimistic<'a>(
+    fn get_leaf_optimistic<F>(
         root: Option<NodePtr<FANOUT, K, V>>,
         key: &K,
-        for_removal: bool,
-    ) -> Vec<ExclusiveLatch<'a, FANOUT, K, V>> {
-        let mut leaf_traversal_optimistic = Self::get_leaf_shared(root.clone(), key);
-        let leaf = leaf_traversal_optimistic.last().unwrap();
-        // if the leaf will require a split / merge
-        if for_removal && !leaf.lock.has_space_for_removal()
-            || !for_removal && !leaf.lock.has_space_for_insert()
-        {
-            drop(leaf_traversal_optimistic);
-            Self::get_leaf_exclusive(root, key, for_removal)
+        clear_ancestors_latches: F,
+    ) -> Vec<ExclusiveLatchInfo<FANOUT, K, V>>
+    where
+        F: Fn(&Node<FANOUT, K, V>) -> bool,
+    {
+        let leaf_traversal_optimistic = Self::get_leaf_shared(root.clone(), key);
+        let leaf = leaf_traversal_optimistic.as_ref().unwrap();
+        // we are safe from splitting so optimistic was good, and we upgrade to write latch
+        if clear_ancestors_latches(&leaf.lock) {
+            let leaf_shared_latch = leaf_traversal_optimistic.unwrap();
+            vec![SharedLatchInfo::upgrade(leaf_shared_latch)]
         }
-        // we are safe from splitting so optimistic was good, and we acquire write latch
+        // if the leaf will require a split / merge, so restart with exclusive
         else {
-            let leaf_shared_latch = leaf_traversal_optimistic.pop().unwrap();
-            let SharedLatch { lock, node } = leaf_shared_latch;
-            // release the read lock (safe to do since we have lock on parent still)
-            drop(lock);
-            let leaf_lock = unsafe { mem::transmute(node.write().unwrap()) };
             drop(leaf_traversal_optimistic);
-            vec![ExclusiveLatch {
-                lock: leaf_lock,
-                node,
-            }]
+            Self::get_leaf_exclusive(root, key, clear_ancestors_latches)
         }
     }
 }
@@ -675,7 +635,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
 
     #[test]
     fn test_search() {
@@ -717,12 +677,12 @@ mod tests {
         let node_leaf3_ptr = Arc::new(RwLock::new(node_leaf3));
 
         // Set node_leaf1_ptr's ptr_leaf_next to node_leaf2_ptr
-        let mut lock = node_leaf1_ptr.write().unwrap();
+        let mut lock = node_leaf1_ptr.write();
         lock.get_leaf_mut().unwrap().next = Some(Arc::downgrade(&node_leaf2_ptr));
         drop(lock);
 
         // Set node_leaf2_ptr's ptr_leaf_next to node_leaf3_ptr
-        let mut lock = node_leaf2_ptr.write().unwrap();
+        let mut lock = node_leaf2_ptr.write();
         lock.get_leaf_mut().unwrap().next = Some(Arc::downgrade(&node_leaf3_ptr));
         drop(lock);
 
@@ -744,27 +704,27 @@ mod tests {
         };
 
         let res = bptree1.search(&0).unwrap();
-        let lock = res.read().ok().unwrap();
+        let lock = res.read();
         assert_eq!(*lock, "John");
         drop(lock);
 
         let res = bptree1.search(&2).unwrap();
-        let lock = res.read().ok().unwrap();
+        let lock = res.read();
         assert_eq!(*lock, "Adam");
         drop(lock);
 
         let res = bptree1.search(&10).unwrap();
-        let lock = res.read().ok().unwrap();
+        let lock = res.read();
         assert_eq!(*lock, "Emily");
         drop(lock);
 
         let res = bptree1.search(&12).unwrap();
-        let lock = res.read().ok().unwrap();
+        let lock = res.read();
         assert_eq!(*lock, "Jessica");
         drop(lock);
 
         let res = bptree1.search(&20).unwrap();
-        let lock = res.read().ok().unwrap();
+        let lock = res.read();
         assert_eq!(*lock, "Sam");
         drop(lock);
 
@@ -822,12 +782,12 @@ mod tests {
         let node_leaf3_ptr = Arc::new(RwLock::new(node_leaf3));
 
         // Set node_leaf1_ptr's ptr_leaf_next to node_leaf2_ptr
-        let mut lock = node_leaf1_ptr.write().unwrap();
+        let mut lock = node_leaf1_ptr.write();
         lock.get_leaf_mut().unwrap().next = Some(Arc::downgrade(&node_leaf2_ptr));
         drop(lock);
 
         // Set node_leaf2_ptr's ptr_leaf_next to node_leaf3_ptr
-        let mut lock = node_leaf2_ptr.write().unwrap();
+        let mut lock = node_leaf2_ptr.write();
         lock.get_leaf_mut().unwrap().next = Some(Arc::downgrade(&node_leaf3_ptr));
         drop(lock);
 
@@ -849,26 +809,26 @@ mod tests {
         };
 
         let res = bptree1.search_range((&1, &2));
-        let lock = res[0].read().unwrap();
+        let lock = res[0].read();
         assert_eq!(*lock, "Adam");
         drop(lock);
 
         let res = bptree1.search_range((&0, &2));
-        let lock = res[0].read().unwrap();
+        let lock = res[0].read();
         assert_eq!(*lock, "John");
         drop(lock);
-        let lock = res[1].read().unwrap();
+        let lock = res[1].read();
         assert_eq!(*lock, "Adam");
         drop(lock);
 
         let res = bptree1.search_range((&2, &12));
-        let lock = res[0].read().unwrap();
+        let lock = res[0].read();
         assert_eq!(*lock, "Adam");
         drop(lock);
-        let lock = res[1].read().unwrap();
+        let lock = res[1].read();
         assert_eq!(*lock, "Emily");
         drop(lock);
-        let lock = res[2].read().unwrap();
+        let lock = res[2].read();
         assert_eq!(*lock, "Jessica");
         drop(lock);
     }

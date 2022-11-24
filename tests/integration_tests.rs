@@ -1,4 +1,5 @@
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 use bplus_tree::bptree::BPTree;
 
@@ -17,7 +18,7 @@ impl<T> LockInClosure<T> for Option<Arc<RwLock<T>>> {
     where
         F: FnOnce(&T) -> R,
     {
-        let lock = self.as_ref().unwrap().read().unwrap();
+        let lock = self.as_ref().unwrap().read();
         f(&*lock)
     }
 
@@ -25,7 +26,7 @@ impl<T> LockInClosure<T> for Option<Arc<RwLock<T>>> {
     where
         F: FnOnce(&mut T) -> R,
     {
-        let mut lock = self.as_ref().unwrap().write().unwrap();
+        let mut lock = self.as_ref().unwrap().write();
         f(&mut *lock)
     }
 }
@@ -241,32 +242,32 @@ fn test_insert() {
     bptree.insert(5, String::from("Srihari"));
 
     let res = bptree.search(&3).unwrap();
-    let lock = res.read().unwrap();
+    let lock = res.read();
     assert_eq!(*lock, "Emily");
     drop(lock);
 
     let res = bptree.search(&5).unwrap();
-    let lock = res.read().unwrap();
+    let lock = res.read();
     assert_eq!(*lock, "Srihari");
     drop(lock);
 
     // update value of 5
     bptree.insert(5, String::from("Cool"));
     let res = bptree.search(&5).unwrap();
-    let lock = res.read().unwrap();
+    let lock = res.read();
     assert_eq!(*lock, "Cool");
     drop(lock);
 
     // this should trigger a leaf split, and create a new root node
     bptree.insert(7, String::from("Rajat"));
     let res = bptree.search(&7).unwrap();
-    let lock = res.read().unwrap();
+    let lock = res.read();
     assert_eq!(*lock, "Rajat");
     drop(lock);
 
     bptree.insert(4, String::from("Erik"));
     let res = bptree.search(&4).unwrap();
-    let lock = res.read().unwrap();
+    let lock = res.read();
     assert_eq!(*lock, "Erik");
     drop(lock);
 
@@ -274,13 +275,13 @@ fn test_insert() {
     // println!("{:#?}", bptree);
     bptree.insert(14, String::from("Golden"));
     let res = bptree.search(&14).unwrap();
-    let lock = res.read().unwrap();
+    let lock = res.read();
     assert_eq!(*lock, "Golden");
     drop(lock);
 
     bptree.insert(16, String::from("Backpack"));
     let res = bptree.search(&16).unwrap();
-    let lock = res.read().unwrap();
+    let lock = res.read();
     assert_eq!(*lock, "Backpack");
     drop(lock);
 }
@@ -295,7 +296,7 @@ fn test_insert_sequential() {
     bptree.insert(4, String::from("Golden"));
 
     let res = bptree.search(&4).unwrap();
-    let lock = res.read().unwrap();
+    let lock = res.read();
     assert_eq!(*lock, "Golden");
     drop(lock);
 
@@ -304,7 +305,7 @@ fn test_insert_sequential() {
     let expected = ["Vishnu", "Rajat", "Patwari", "Golden"];
 
     for i in 0..res.len() {
-        let lock = res[i].read().unwrap();
+        let lock = res[i].read();
         assert_eq!(expected[i], *lock);
         drop(lock);
     }
@@ -428,9 +429,7 @@ fn test_remove_2() {
 
         for j in i + 1..removal_order.len() {
             assert_eq!(
-                bptree
-                    .search(&removal_order[j])
-                    .safe_read(|val| *val),
+                bptree.search(&removal_order[j]).safe_read(|val| *val),
                 removal_order[j]
             )
         }
@@ -466,9 +465,7 @@ fn test_remove_3() {
 
         for j in i + 1..removal_order.len() {
             assert_eq!(
-                bptree
-                    .search(&removal_order[j])
-                    .safe_read(|val| *val),
+                bptree.search(&removal_order[j]).safe_read(|val| *val),
                 removal_order[j]
             )
         }
@@ -570,7 +567,7 @@ fn sizes_insert_helper(keys: &[usize], values: &[usize], expected: &[usize], ver
 
                 for j in start..=i {
                     let res = bptree.search(&keys[j]).unwrap();
-                    let lock = res.read().unwrap();
+                    let lock = res.read();
                     assert_eq!(*lock, values[j]);
                     drop(lock);
                 }
@@ -580,7 +577,7 @@ fn sizes_insert_helper(keys: &[usize], values: &[usize], expected: &[usize], ver
             assert_eq!(res.len(), expected.len());
 
             for i in 0..res.len() {
-                let lock = res[i].read().unwrap();
+                let lock = res[i].read();
                 assert_eq!(*lock, expected[i]);
                 drop(lock);
             }
