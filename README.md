@@ -3,7 +3,7 @@
 A fully functional, in-memory B+ Tree data structure implemented in Rust. 
 
 TODO:
-- [ ] Ensure thread safety
+- [x] Ensure thread safety
 - [ ] Run benchmarks
 - [ ] Serialize data to disk
 

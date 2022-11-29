@@ -5,26 +5,26 @@ use std::sync::{Arc, Weak};
 
 const INVALID_NODE_ERROR_MESSAGE: &str = "Invalid node encountered!";
 
-pub type NodePtr<const FANOUT: usize, K, V> = Arc<RwLock<Node<FANOUT, K, V>>>;
+pub type NodePtr<const FANOUT: usize, K, V> = Arc<RwLock<Option<Node<FANOUT, K, V>>>>;
 
-pub type NodeWeakPtr<const FANOUT: usize, K, V> = Weak<RwLock<Node<FANOUT, K, V>>>;
+pub type NodeWeakPtr<const FANOUT: usize, K, V> = Weak<RwLock<Option<Node<FANOUT, K, V>>>>;
 
-pub type RecordPtr<V> = Arc<RwLock<V>>;
+pub type RecordPtr<V> = Arc<RwLock<Option<V>>>;
 
 #[derive(Debug, Clone)]
 pub struct Leaf<const FANOUT: usize, K: Key, V: Record> {
     pub num_keys: usize,
     pub keys: Vec<Option<K>>,
-    pub records: Vec<Option<RecordPtr<V>>>,
-    pub prev: Option<NodeWeakPtr<FANOUT, K, V>>,
-    pub next: Option<NodeWeakPtr<FANOUT, K, V>>,
+    pub records: Vec<RecordPtr<V>>,
+    pub prev: NodeWeakPtr<FANOUT, K, V>,
+    pub next: NodeWeakPtr<FANOUT, K, V>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Interior<const FANOUT: usize, K: Key, V: Record> {
     pub num_keys: usize,
     pub keys: Vec<Option<K>>,
-    pub children: Vec<Option<NodePtr<FANOUT, K, V>>>,
+    pub children: Vec<NodePtr<FANOUT, K, V>>,
 }
 
 #[derive(Default, Clone)]
@@ -50,22 +50,34 @@ macro_rules! create_node_get_fn {
 impl<const FANOUT: usize, K: Key, V: Record> Node<FANOUT, K, V> {
     pub fn new_leaf() -> Leaf<FANOUT, K, V> {
         assert!(FANOUT > 1);
+        let mut records = Vec::with_capacity(FANOUT + 1);
+        for _ in 0..FANOUT + 1 {
+            records.push(Arc::new(RwLock::new(None)));
+        }
         Leaf {
             num_keys: 0,
             keys: vec![None; FANOUT],
-            records: vec![None; FANOUT],
-            prev: None,
-            next: None,
+            records,
+            prev: Weak::new(),
+            next: Weak::new(),
         }
     }
 
     pub fn new_interior() -> Interior<FANOUT, K, V> {
         assert!(FANOUT > 1);
+        let mut children = Vec::with_capacity(FANOUT + 1);
+        for _ in 0..FANOUT + 1 {
+            children.push(Self::new_empty());
+        }
         Interior {
             num_keys: 0,
             keys: vec![None; FANOUT],
-            children: vec![None; FANOUT + 1],
+            children,
         }
+    }
+
+    pub fn new_empty() -> NodePtr<FANOUT, K, V> {
+        Arc::new(RwLock::new(None))
     }
 
     create_node_get_fn!(get_leaf, &Self, &Leaf<FANOUT, K, V>, Leaf);
@@ -126,8 +138,8 @@ impl<const FANOUT: usize, K: Key, V: Record> fmt::Debug for Node<FANOUT, K, V> {
 
                 let mut records = vec![];
                 for r in &leaf.records[..leaf.records.len() - 1] {
-                    records.push(match r {
-                        Some(val) => val.try_read(),
+                    records.push(match r.try_read() {
+                        Some(val) => val.clone(),
                         None => None,
                     })
                 }
@@ -149,8 +161,8 @@ impl<const FANOUT: usize, K: Key, V: Record> fmt::Debug for Node<FANOUT, K, V> {
 
                 let mut children = vec![];
                 for r in &node.children[..node.children.len() - 1] {
-                    children.push(match r {
-                        Some(val) => val.try_read(),
+                    children.push(match r.try_read() {
+                        Some(val) => val.clone(),
                         None => None,
                     })
                 }

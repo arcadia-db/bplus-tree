@@ -4,11 +4,11 @@ use parking_lot::RawRwLock;
 use super::{node::*, typedefs::*};
 
 pub struct SharedLatchInfo<const FANOUT: usize, K: Key, V: Record> {
-    pub lock: ArcRwLockUpgradableReadGuard<RawRwLock, Node<FANOUT, K, V>>,
+    pub lock: ArcRwLockUpgradableReadGuard<RawRwLock, Option<Node<FANOUT, K, V>>>,
     pub node: NodePtr<FANOUT, K, V>,
 }
 pub struct ExclusiveLatchInfo<const FANOUT: usize, K: Key, V: Record> {
-    pub lock: ArcRwLockWriteGuard<RawRwLock, Node<FANOUT, K, V>>,
+    pub lock: ArcRwLockWriteGuard<RawRwLock, Option<Node<FANOUT, K, V>>>,
     pub node: NodePtr<FANOUT, K, V>,
 }
 
