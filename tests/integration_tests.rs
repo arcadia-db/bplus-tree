@@ -1,37 +1,11 @@
-use std::sync::{Arc, RwLock};
-
 use bplus_tree::bptree::BPTree;
 
-pub trait LockInClosure<T> {
-    fn safe_read<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&T) -> R;
+use crate::common::LockInClosure;
+mod common;
 
-    fn safe_write<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut T) -> R;
-}
-
-impl<T> LockInClosure<T> for Option<Arc<RwLock<T>>> {
-    fn safe_read<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&T) -> R,
-    {
-        let lock = self.as_ref().unwrap().read().unwrap();
-        f(&*lock)
-    }
-
-    fn safe_write<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut T) -> R,
-    {
-        let mut lock = self.as_ref().unwrap().write().unwrap();
-        f(&mut *lock)
-    }
-}
 #[test]
 fn test_range_search_2() {
-    let mut bptree: BPTree<3, i32, String> = BPTree::new();
+    let bptree: BPTree<3, i32, String> = BPTree::new();
     bptree.insert(3, String::from("a"));
     bptree.insert(5, String::from("b"));
     bptree.insert(1, String::from("c"));
@@ -40,7 +14,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&2, &7))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().clone().unwrap())
             .collect::<Vec<String>>(),
         vec![String::from("a"), String::from("b")],
     );
@@ -50,12 +24,12 @@ fn test_range_search_2() {
         bptree
             .search_range((&2, &7))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().clone().unwrap())
             .collect::<Vec<String>>(),
         vec![String::from("a"), String::from("d"), String::from("b")],
     );
 
-    let mut bptree: BPTree<3, i32, i32> = BPTree::new();
+    let bptree: BPTree<3, i32, i32> = BPTree::new();
     bptree.insert(1, 1);
     bptree.insert(2, 2);
     bptree.insert(4, 4);
@@ -72,7 +46,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&2, &18))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![2, 4, 9, 15, 18],
     );
@@ -81,7 +55,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&18, &34))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![18, 19, 21, 34],
     );
@@ -90,7 +64,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&18, &18))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![18],
     );
@@ -100,7 +74,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&2, &24))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![2, 4, 9, 15, 18, 19, 21],
     );
@@ -109,7 +83,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&18, &20))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![18, 19],
     );
@@ -119,7 +93,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&5, &18))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![9, 15, 18],
     );
@@ -128,7 +102,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&0, &9))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![1, 2, 4, 9],
     );
@@ -137,7 +111,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&14, &34))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![15, 18, 19, 21, 34],
     );
@@ -146,7 +120,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&16, &21))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![18, 19, 21],
     );
@@ -155,7 +129,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&3, &15))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![4, 9, 15],
     );
@@ -165,7 +139,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&16, &22))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![18, 19, 21],
     );
@@ -174,7 +148,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&35, &123))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![121],
     );
@@ -183,7 +157,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&3, &17))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![4, 9, 15],
     );
@@ -192,7 +166,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&20, &35))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![21, 34],
     );
@@ -202,7 +176,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&-5, &0))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![],
     );
@@ -211,7 +185,7 @@ fn test_range_search_2() {
         bptree
             .search_range((&122, &156))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().unwrap())
             .collect::<Vec<i32>>(),
         vec![],
     );
@@ -219,7 +193,7 @@ fn test_range_search_2() {
 
 #[test]
 fn test_range_search_3() {
-    let mut bptree: BPTree<3, i32, String> = BPTree::new();
+    let bptree: BPTree<3, i32, String> = BPTree::new();
     bptree.insert(3, "John".into());
     bptree.insert(6, "Emily".into());
     bptree.insert(9, "Sam".into());
@@ -228,7 +202,7 @@ fn test_range_search_3() {
         bptree
             .search_range((&5, &10))
             .iter()
-            .map(|item| item.try_read().unwrap().clone())
+            .map(|item| item.try_read().unwrap().clone().unwrap())
             .collect::<Vec<String>>(),
         vec![String::from("Emily"), String::from("Sam")],
     );
@@ -236,58 +210,58 @@ fn test_range_search_3() {
 
 #[test]
 fn test_insert() {
-    let mut bptree: BPTree<3, i32, String> = BPTree::new();
+    let bptree: BPTree<3, i32, String> = BPTree::new();
     bptree.insert(3, String::from("Emily"));
     bptree.insert(5, String::from("Srihari"));
 
     let res = bptree.search(&3).unwrap();
-    let lock = res.read().unwrap();
-    assert_eq!(*lock, "Emily");
+    let lock = res.read();
+    assert_eq!(lock.as_ref().unwrap(), "Emily");
     drop(lock);
 
     let res = bptree.search(&5).unwrap();
-    let lock = res.read().unwrap();
-    assert_eq!(*lock, "Srihari");
+    let lock = res.read();
+    assert_eq!(lock.as_ref().unwrap(), "Srihari");
     drop(lock);
 
     // update value of 5
     bptree.insert(5, String::from("Cool"));
     let res = bptree.search(&5).unwrap();
-    let lock = res.read().unwrap();
-    assert_eq!(*lock, "Cool");
+    let lock = res.read();
+    assert_eq!(lock.as_ref().unwrap(), "Cool");
     drop(lock);
 
     // this should trigger a leaf split, and create a new root node
     bptree.insert(7, String::from("Rajat"));
     let res = bptree.search(&7).unwrap();
-    let lock = res.read().unwrap();
-    assert_eq!(*lock, "Rajat");
+    let lock = res.read();
+    assert_eq!(lock.as_ref().unwrap(), "Rajat");
     drop(lock);
 
     bptree.insert(4, String::from("Erik"));
     let res = bptree.search(&4).unwrap();
-    let lock = res.read().unwrap();
-    assert_eq!(*lock, "Erik");
+    let lock = res.read();
+    assert_eq!(lock.as_ref().unwrap(), "Erik");
     drop(lock);
 
     // This causes a new leaf node and adding a key to the root internal node
     // println!("{:#?}", bptree);
     bptree.insert(14, String::from("Golden"));
     let res = bptree.search(&14).unwrap();
-    let lock = res.read().unwrap();
-    assert_eq!(*lock, "Golden");
+    let lock = res.read();
+    assert_eq!(lock.as_ref().unwrap(), "Golden");
     drop(lock);
 
     bptree.insert(16, String::from("Backpack"));
     let res = bptree.search(&16).unwrap();
-    let lock = res.read().unwrap();
-    assert_eq!(*lock, "Backpack");
+    let lock = res.read();
+    assert_eq!(lock.as_ref().unwrap(), "Backpack");
     drop(lock);
 }
 
 #[test]
 fn test_insert_sequential() {
-    let mut bptree: BPTree<3, i32, String> = BPTree::new();
+    let bptree: BPTree<3, i32, String> = BPTree::new();
     bptree.insert(0, String::from("Srihari"));
     bptree.insert(1, String::from("Vishnu"));
     bptree.insert(2, String::from("Rajat"));
@@ -295,8 +269,8 @@ fn test_insert_sequential() {
     bptree.insert(4, String::from("Golden"));
 
     let res = bptree.search(&4).unwrap();
-    let lock = res.read().unwrap();
-    assert_eq!(*lock, "Golden");
+    let lock = res.read();
+    assert_eq!(lock.as_ref().unwrap(), "Golden");
     drop(lock);
 
     let res = bptree.search_range((&1, &4));
@@ -304,8 +278,8 @@ fn test_insert_sequential() {
     let expected = ["Vishnu", "Rajat", "Patwari", "Golden"];
 
     for i in 0..res.len() {
-        let lock = res[i].read().unwrap();
-        assert_eq!(expected[i], *lock);
+        let lock = res[i].read();
+        assert_eq!(expected[i], lock.as_ref().unwrap());
         drop(lock);
     }
     // println!("{:#?}", bptree);
@@ -352,7 +326,7 @@ fn test_insert_small() {
 
 #[test]
 fn test_remove_simple() {
-    let mut bptree: BPTree<3, i32, i32> = BPTree::new();
+    let bptree: BPTree<3, i32, i32> = BPTree::new();
 
     // root is leaf and remove remaining key results in empty tree
     bptree.insert(4, 4);
@@ -363,7 +337,7 @@ fn test_remove_simple() {
     bptree.insert(4, 4);
     bptree.remove(&4);
     assert!(bptree.search(&4).is_none());
-    bptree.search(&5).safe_read(|val| assert_eq!(*val, 5));
+    bptree.search(&5).safe_read(|val| assert_eq!(*val, Some(5)));
 
     // root is full
     bptree.insert(4, 4);
@@ -383,7 +357,7 @@ fn test_remove_simple() {
 
 #[test]
 fn test_remove() {
-    let mut bptree: BPTree<3, i32, i32> = BPTree::new();
+    let bptree: BPTree<3, i32, i32> = BPTree::new();
     bptree.insert(1, 1);
     bptree.insert(2, 2);
     bptree.insert(5, 5);
@@ -402,11 +376,13 @@ fn test_remove() {
     bptree.remove(&10);
     assert!(bptree.search(&10).is_none());
 
-    bptree.search(&8).safe_read(|val| assert_eq!(*val, 8));
-    bptree.search(&19).safe_read(|val| assert_eq!(*val, 19));
+    bptree.search(&8).safe_read(|val| assert_eq!(*val, Some(8)));
+    bptree
+        .search(&19)
+        .safe_read(|val| assert_eq!(*val, Some(19)));
     bptree.remove(&19);
     assert!(bptree.search(&19).is_none());
-    bptree.search(&8).safe_read(|val| assert_eq!(*val, 8));
+    bptree.search(&8).safe_read(|val| assert_eq!(*val, Some(8)));
     bptree.remove(&8);
     assert!(bptree.search(&8).is_none());
 }
@@ -414,7 +390,7 @@ fn test_remove() {
 #[test]
 fn test_remove_2() {
     let values = [6, 7, 4, 9, 8, 1];
-    let mut bptree = BPTree::<3, i32, i32>::new();
+    let bptree = BPTree::<3, i32, i32>::new();
 
     for value in values {
         bptree.insert(value, value);
@@ -428,10 +404,8 @@ fn test_remove_2() {
 
         for j in i + 1..removal_order.len() {
             assert_eq!(
-                bptree
-                    .search(&removal_order[j])
-                    .safe_read(|val| val.clone()),
-                removal_order[j]
+                bptree.search(&removal_order[j]).safe_read(|val| *val),
+                Some(removal_order[j])
             )
         }
     }
@@ -446,7 +420,7 @@ fn test_remove_3() {
         36, 91, 26, 58, 8, 57, 87, 24, 67, 30, 65, 38, 99, 10, 75, 55, 22, 63, 95, 96, 97, 0, 37,
         89, 85, 5, 94, 44, 81, 2, 49,
     ];
-    let mut bptree: BPTree<3, usize, usize> = BPTree::new();
+    let bptree: BPTree<3, usize, usize> = BPTree::new();
     for value in &values {
         bptree.insert(*value, *value)
     }
@@ -466,10 +440,8 @@ fn test_remove_3() {
 
         for j in i + 1..removal_order.len() {
             assert_eq!(
-                bptree
-                    .search(&removal_order[j])
-                    .safe_read(|val| val.clone()),
-                removal_order[j]
+                bptree.search(&removal_order[j]).safe_read(|val| *val),
+                Some(removal_order[j])
             )
         }
     }
@@ -562,7 +534,7 @@ mod stress_tests {
 fn sizes_insert_helper(keys: &[usize], values: &[usize], expected: &[usize], verify: bool) {
     macro_rules! SIZES_TEST {
         ($size: expr) => {
-            let mut bptree: BPTree<$size, usize, usize> = BPTree::new();
+            let bptree: BPTree<$size, usize, usize> = BPTree::new();
 
             for i in 0..keys.len() {
                 bptree.insert(keys[i], values[i]);
@@ -570,8 +542,8 @@ fn sizes_insert_helper(keys: &[usize], values: &[usize], expected: &[usize], ver
 
                 for j in start..=i {
                     let res = bptree.search(&keys[j]).unwrap();
-                    let lock = res.read().unwrap();
-                    assert_eq!(*lock, values[j]);
+                    let lock = res.read();
+                    assert_eq!(*lock, Some(values[j]));
                     drop(lock);
                 }
             }
@@ -580,8 +552,8 @@ fn sizes_insert_helper(keys: &[usize], values: &[usize], expected: &[usize], ver
             assert_eq!(res.len(), expected.len());
 
             for i in 0..res.len() {
-                let lock = res[i].read().unwrap();
-                assert_eq!(*lock, expected[i]);
+                let lock = res[i].read();
+                assert_eq!(*lock, Some(expected[i]));
                 drop(lock);
             }
         };
@@ -597,10 +569,12 @@ fn sizes_insert_helper(keys: &[usize], values: &[usize], expected: &[usize], ver
 fn sizes_remove_helper(values: &[usize], verify: bool) {
     macro_rules! SIZES_TEST {
         ($size: expr) => {
-            let mut bptree: BPTree<$size, usize, usize> = BPTree::new();
+            let bptree: BPTree<$size, usize, usize> = BPTree::new();
             for value in values {
                 bptree.insert(*value, *value);
-                bptree.search(value).safe_read(|val| assert_eq!(val, value));
+                bptree
+                    .search(value)
+                    .safe_read(|val| assert_eq!(*val, Some(*value)));
             }
             for i in 0..values.len() {
                 let value = &values[i];
@@ -611,7 +585,7 @@ fn sizes_remove_helper(values: &[usize], verify: bool) {
                     for j in i + 1..values.len() {
                         assert_eq!(
                             bptree.search(&values[j]).safe_read(|val| val.clone()),
-                            values[j]
+                            Some(values[j])
                         )
                     }
                 }
