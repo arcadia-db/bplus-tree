@@ -239,24 +239,24 @@ fn test_insert() {
     drop(lock);
 
     bptree.insert(4, String::from("Erik"));
-    // let res = bptree.search(&4).unwrap();
-    // let lock = res.read();
-    // assert_eq!(lock.as_ref().unwrap(), "Erik");
-    // drop(lock);
+    let res = bptree.search(&4).unwrap();
+    let lock = res.read();
+    assert_eq!(lock.as_ref().unwrap(), "Erik");
+    drop(lock);
 
-    // // This causes a new leaf node and adding a key to the root internal node
-    // // println!("{:#?}", bptree);
-    // bptree.insert(14, String::from("Golden"));
-    // let res = bptree.search(&14).unwrap();
-    // let lock = res.read();
-    // assert_eq!(lock.as_ref().unwrap(), "Golden");
-    // drop(lock);
+    // This causes a new leaf node and adding a key to the root internal node
+    // println!("{:#?}", bptree);
+    bptree.insert(14, String::from("Golden"));
+    let res = bptree.search(&14).unwrap();
+    let lock = res.read();
+    assert_eq!(lock.as_ref().unwrap(), "Golden");
+    drop(lock);
 
-    // bptree.insert(16, String::from("Backpack"));
-    // let res = bptree.search(&16).unwrap();
-    // let lock = res.read();
-    // assert_eq!(lock.as_ref().unwrap(), "Backpack");
-    // drop(lock);
+    bptree.insert(16, String::from("Backpack"));
+    let res = bptree.search(&16).unwrap();
+    let lock = res.read();
+    assert_eq!(lock.as_ref().unwrap(), "Backpack");
+    drop(lock);
 }
 
 #[test]
@@ -331,7 +331,7 @@ fn test_remove_simple() {
     // root is leaf and remove remaining key results in empty tree
     bptree.insert(4, 4);
     bptree.remove(&4);
-    assert!(unsafe { bptree.is_empty() });
+    assert!(bptree.is_empty());
 
     bptree.insert(5, 5);
     bptree.insert(4, 4);

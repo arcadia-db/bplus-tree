@@ -8,7 +8,11 @@ use std::{mem, vec};
 pub struct BPTree<const FANOUT: usize, K: Key, V: Record> {
     root: NodePtr<FANOUT, K, V>,
 }
-
+impl<const FANOUT: usize, K: Key, V: Record> Default for BPTree<FANOUT, K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
     pub fn new() -> Self {
         assert!(FANOUT > 1);
@@ -17,7 +21,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         }
     }
 
-    pub unsafe fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.root.read().is_none()
     }
 
@@ -55,25 +59,21 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             let mut leaf_lock = traversal.lock;
 
             // Find position within leaf
-            let mut leaf_node = leaf_lock.as_ref().unwrap().get_leaf().unwrap();
-
-            let mut i = 0;
-            while i < leaf_node.num_keys && leaf_node.keys[i].as_ref().unwrap() < start {
-                i += 1;
-            }
+            let mut leaf = leaf_lock.as_ref().unwrap().get_leaf().unwrap();
 
             // this loops through leaf nodes + records that fall in the given range
             loop {
-                while i < leaf_node.num_keys && leaf_node.keys[i].as_ref().unwrap() <= end {
-                    if leaf_node.keys[i].as_ref().unwrap() >= start {
-                        result.push(leaf_node.records[i].clone());
+                let mut i = 0;
+                while i < leaf.num_keys && leaf.keys[i].as_ref().unwrap() <= end {
+                    if leaf.keys[i].as_ref().unwrap() >= start {
+                        result.push(leaf.records[i].clone());
                     }
                     i += 1;
                 }
-                if i != leaf_node.num_keys {
+                if i != leaf.num_keys {
                     return result;
                 }
-                let temp = leaf_node.next.upgrade();
+                let temp = leaf.next.upgrade();
                 if temp.is_none() {
                     return result;
                 }
@@ -85,12 +85,10 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
 
                 if let Some(guard) = cur_lock_attempt {
                     leaf_lock = guard;
-                    leaf_node = leaf_lock.as_ref().unwrap().get_leaf().unwrap();
+                    leaf = leaf_lock.as_ref().unwrap().get_leaf().unwrap();
                 } else {
                     break;
                 }
-
-                i = 0;
             }
         }
     }
@@ -261,7 +259,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
 
             let (left_lock, right_child) = if i < parent.num_keys {
                 drop(sibling_lock);
-                (leaf_lock, sibling_node.clone())
+                (leaf_lock, sibling_node)
             } else {
                 drop(leaf_lock);
                 (sibling_lock, leaf_node)
@@ -600,9 +598,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
 
             // if we are sure that this node will not undergo any
             // structural changes, we can release the latches on all ancestors
-            // if for_removal && lock.has_space_for_removal()
-            //     || !for_removal && lock.has_space_for_insert()
-            if clear_ancestors_latches(&lock.as_ref().unwrap()) {
+            if clear_ancestors_latches(lock.as_ref().unwrap()) {
                 // TODO: check that locks are dropped in order
                 latches.clear();
             }
@@ -627,7 +623,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
 
         // we are safe from splitting so optimistic was good, and we upgrade to write latch
         if leaf_traversal_optimistic.lock.is_none()
-            || clear_ancestors_latches(&leaf_traversal_optimistic.lock.as_ref().unwrap())
+            || clear_ancestors_latches(leaf_traversal_optimistic.lock.as_ref().unwrap())
         {
             vec![SharedLatchInfo::upgrade(leaf_traversal_optimistic)]
         }
@@ -767,95 +763,94 @@ mod tests {
         bptree.insert(7, 4);
     }
 
-    // #[test]
-    // fn test_range_search() {
-    //     const TEST_FANOUT: usize = 2;
+    #[test]
+    fn test_range_search() {
+        const TEST_FANOUT: usize = 2;
 
-    //     // Create node (0 = "John"), (2 = "Adam")
-    //     let node_leaf1: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
-    //         num_keys: 2,
-    //         keys: vec![Some(0), Some(2)],
-    //         records: vec![
-    //             Some(Arc::new(RwLock::new(String::from("John")))),
-    //             Some(Arc::new(RwLock::new(String::from("Adam")))),
-    //         ],
-    //         prev: None,
-    //         next: None,
-    //     });
-    //     let node_leaf1_ptr = Arc::new(RwLock::new(node_leaf1));
+        // Create node (0 = "John"), (2 = "Adam")
+        let node_leaf1: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
+            num_keys: 2,
+            keys: vec![Some(0), Some(2)],
+            records: vec![
+                Arc::new(RwLock::new(Some(String::from("John")))),
+                Arc::new(RwLock::new(Some(String::from("Adam")))),
+            ],
+            prev: Weak::new(),
+            next: Weak::new(),
+        });
+        let node_leaf1_ptr = Arc::new(RwLock::new(Some(node_leaf1)));
 
-    //     // Create node (10 = "Emily"), (12 = "Jessica")
-    //     let node_leaf2: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
-    //         num_keys: 2,
-    //         keys: vec![Some(10), Some(12)],
-    //         records: vec![
-    //             Some(Arc::new(RwLock::new(String::from("Emily")))),
-    //             Some(Arc::new(RwLock::new(String::from("Jessica")))),
-    //         ],
-    //         prev: Some(Arc::downgrade(&node_leaf1_ptr)),
-    //         next: None,
-    //     });
-    //     let node_leaf2_ptr = Arc::new(RwLock::new(node_leaf2));
+        // Create node (10 = "Emily"), (12 = "Jessica")
+        let node_leaf2: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
+            num_keys: 2,
+            keys: vec![Some(10), Some(12)],
+            records: vec![
+                Arc::new(RwLock::new(Some(String::from("Emily")))),
+                Arc::new(RwLock::new(Some(String::from("Jessica")))),
+            ],
+            prev: Arc::downgrade(&node_leaf1_ptr),
+            next: Weak::new(),
+        });
+        let node_leaf2_ptr = Arc::new(RwLock::new(Some(node_leaf2)));
 
-    //     // Create node (20 = "Sam")
-    //     let node_leaf3: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
-    //         num_keys: 1,
-    //         keys: vec![Some(20), None],
-    //         records: vec![Some(Arc::new(RwLock::new(String::from("Sam")))), None],
-    //         prev: Some(Arc::downgrade(&node_leaf2_ptr)),
-    //         next: None,
-    //     });
-    //     let node_leaf3_ptr = Arc::new(RwLock::new(node_leaf3));
+        // Create node (20 = "Sam")
+        let node_leaf3: Node<TEST_FANOUT, i32, String> = Node::Leaf(Leaf {
+            num_keys: 1,
+            keys: vec![Some(20), None],
+            records: vec![
+                Arc::new(RwLock::new(Some(String::from("Sam")))),
+                Arc::new(RwLock::new(None)),
+            ],
+            prev: Arc::downgrade(&node_leaf2_ptr),
+            next: Weak::new(),
+        });
+        let node_leaf3_ptr = Arc::new(RwLock::new(Some(node_leaf3)));
 
-    //     // Set node_leaf1_ptr's ptr_leaf_next to node_leaf2_ptr
-    //     let mut lock = node_leaf1_ptr.write();
-    //     lock.get_leaf_mut().unwrap().next = Some(Arc::downgrade(&node_leaf2_ptr));
-    //     drop(lock);
+        // Set node_leaf1_ptr's ptr_leaf_next to node_leaf2_ptr
+        let mut lock = node_leaf1_ptr.write();
+        lock.as_mut().unwrap().get_leaf_mut().unwrap().next = Arc::downgrade(&node_leaf2_ptr);
+        drop(lock);
 
-    //     // Set node_leaf2_ptr's ptr_leaf_next to node_leaf3_ptr
-    //     let mut lock = node_leaf2_ptr.write();
-    //     lock.get_leaf_mut().unwrap().next = Some(Arc::downgrade(&node_leaf3_ptr));
-    //     drop(lock);
+        // Set node_leaf2_ptr's ptr_leaf_next to node_leaf3_ptr
+        let mut lock = node_leaf2_ptr.write();
+        lock.as_mut().unwrap().get_leaf_mut().unwrap().next = Arc::downgrade(&node_leaf3_ptr);
+        drop(lock);
 
-    //     // Create interior (node_leaf1_ptr, node_leaf2_ptr, node_leaf3_ptr)
-    //     let node_interior1: Node<TEST_FANOUT, i32, String> = Node::Interior(Interior {
-    //         num_keys: 2,
-    //         keys: vec![Some(10), Some(20)],
-    //         children: vec![
-    //             Some(node_leaf1_ptr),
-    //             Some(node_leaf2_ptr),
-    //             Some(node_leaf3_ptr),
-    //         ],
-    //     });
-    //     let node_interior1_ptr = Arc::new(RwLock::new(node_interior1));
+        // Create interior (node_leaf1_ptr, node_leaf2_ptr, node_leaf3_ptr)
+        let node_interior1: Node<TEST_FANOUT, i32, String> = Node::Interior(Interior {
+            num_keys: 2,
+            keys: vec![Some(10), Some(20)],
+            children: vec![node_leaf1_ptr, node_leaf2_ptr, node_leaf3_ptr],
+        });
+        let node_interior1_ptr = Arc::new(RwLock::new(Some(node_interior1)));
 
-    //     // Create B+Tree
-    //     let bptree1: BPTree<TEST_FANOUT, i32, String> = BPTree {
-    //         root: Some(node_interior1_ptr),
-    //     };
+        // Create B+Tree
+        let bptree1: BPTree<TEST_FANOUT, i32, String> = BPTree {
+            root: node_interior1_ptr,
+        };
 
-    //     let res = bptree1.search_range((&1, &2));
-    //     let lock = res[0].read();
-    //     assert_eq!(*lock, "Adam");
-    //     drop(lock);
+        let res = bptree1.search_range((&1, &2));
+        let lock = res[0].read();
+        assert_eq!(lock.as_ref().unwrap(), "Adam");
+        drop(lock);
 
-    //     let res = bptree1.search_range((&0, &2));
-    //     let lock = res[0].read();
-    //     assert_eq!(*lock, "John");
-    //     drop(lock);
-    //     let lock = res[1].read();
-    //     assert_eq!(*lock, "Adam");
-    //     drop(lock);
+        let res = bptree1.search_range((&0, &2));
+        let lock = res[0].read();
+        assert_eq!(lock.as_ref().unwrap(), "John");
+        drop(lock);
+        let lock = res[1].read();
+        assert_eq!(lock.as_ref().unwrap(), "Adam");
+        drop(lock);
 
-    //     let res = bptree1.search_range((&2, &12));
-    //     let lock = res[0].read();
-    //     assert_eq!(*lock, "Adam");
-    //     drop(lock);
-    //     let lock = res[1].read();
-    //     assert_eq!(*lock, "Emily");
-    //     drop(lock);
-    //     let lock = res[2].read();
-    //     assert_eq!(*lock, "Jessica");
-    //     drop(lock);
-    // }
+        let res = bptree1.search_range((&2, &12));
+        let lock = res[0].read();
+        assert_eq!(lock.as_ref().unwrap(), "Adam");
+        drop(lock);
+        let lock = res[1].read();
+        assert_eq!(lock.as_ref().unwrap(), "Emily");
+        drop(lock);
+        let lock = res[2].read();
+        assert_eq!(lock.as_ref().unwrap(), "Jessica");
+        drop(lock);
+    }
 }

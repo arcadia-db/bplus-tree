@@ -63,7 +63,7 @@ fn test_read_heavy() {
     let clone_2 = bptree.clone();
     let clone_3 = bptree.clone();
     let clone_4 = bptree.clone();
-    let clone_5 = bptree.clone();
+    let clone_5 = bptree;
 
     for i in 0..50000 {
         clone_1.insert(i, i);
@@ -125,7 +125,7 @@ fn test_mixed_workload() {
     let clone_7 = bptree.clone();
     let clone_8 = bptree.clone();
     let clone_9 = bptree.clone();
-    let clone_10 = bptree.clone();
+    let clone_10 = bptree;
 
     for i in 0..10000 {
         clone_1.insert(i, i);
