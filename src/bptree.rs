@@ -1,8 +1,12 @@
-use super::{conc::*, node::*, typedefs::*};
+use crate::node::interior::Interior;
+use crate::node::node::Node;
+
+use super::{conc::*, typedefs::*};
+
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{mem, vec};
+use std::vec;
 
 #[derive(Debug, Clone)]
 pub struct BPTree<const FANOUT: usize, K: Key, V: Record> {
@@ -81,7 +85,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
                 let cur_lock_attempt = temp
                     .as_ref()
                     .unwrap()
-                    .try_upgradable_read_arc_for(Duration::from_nanos(50));
+                    .try_read_arc_for(Duration::from_micros(10));
 
                 if let Some(guard) = cur_lock_attempt {
                     leaf_lock = guard;
@@ -113,202 +117,25 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             return;
         }
 
-        // 2 - Insert into leaf, splitting if needed
+        // 2 - Insert into leaf
         let leaf = leaf_lock.as_mut().unwrap().get_leaf_mut().unwrap();
-
-        let mut insertion_idx = 0;
-        while insertion_idx < leaf.num_keys && *leaf.keys[insertion_idx].as_ref().unwrap() < key {
-            insertion_idx += 1
-        }
-
-        // if it exists, just update the record
-        if insertion_idx < leaf.num_keys && *leaf.keys[insertion_idx].as_ref().unwrap() == key {
-            leaf.records[insertion_idx] = Arc::new(RwLock::new(Some(record)));
-            return;
-        }
-
-        let mut i = leaf.num_keys;
-        while i > insertion_idx {
-            leaf.keys.swap(i, i - 1);
-            leaf.records.swap(i, i - 1);
-            i -= 1
-        }
-        leaf.keys[insertion_idx] = Some(key);
-        leaf.records[insertion_idx] = Arc::new(RwLock::new(Some(record)));
-        leaf.num_keys += 1;
+        leaf.insert(key, record);
 
         // split if overflow (this is why we added 1 extra spot in the array)
         if leaf.num_keys == FANOUT {
-            let mut new_leaf: Leaf<FANOUT, K, V> = Node::new_leaf();
-            let split = FANOUT / 2;
-
-            for i in split..leaf.num_keys {
-                mem::swap(&mut new_leaf.keys[i - split], &mut leaf.keys[i]);
-                mem::swap(&mut new_leaf.records[i - split], &mut leaf.records[i]);
-            }
-
-            new_leaf.num_keys = leaf.num_keys - split;
-            leaf.num_keys = split;
-
-            let new_key = new_leaf.keys[0].clone().unwrap();
-            new_leaf.prev = Arc::downgrade(&leaf_node);
-            new_leaf.next = leaf.next.clone();
-
-            let new_leaf_node = Arc::new(RwLock::new(Some(Node::Leaf(new_leaf))));
-            leaf.next = Arc::downgrade(&new_leaf_node);
-
-            self.insert_into_parent(
-                leaf_lock,
-                leaf_node,
-                new_key,
-                new_leaf_node,
-                ancestor_latches,
-            );
+            let (new_key, new_leaf_node) = leaf.split(leaf_node);
+            self.insert_into_parent(leaf_lock, new_key, new_leaf_node, ancestor_latches);
         }
     }
 
     pub fn remove(&self, key: &K) {
-        // optimistic latching
-        let mut ancestor_latches =
-            self.get_leaf_optimistic(key, |node| node.has_space_for_removal());
-
-        let ExclusiveLatchInfo {
-            lock: mut leaf_lock,
-            node: leaf_node,
-        } = ancestor_latches.pop().unwrap();
+        let ancestor_latches = self.get_leaf_optimistic(key, |node| node.has_space_for_removal());
 
         // tree is empty
-        if leaf_lock.is_none() {
+        if ancestor_latches.is_empty() || ancestor_latches.last().is_none() {
             return;
         }
-
-        let leaf = leaf_lock.as_mut().unwrap().get_leaf_mut().unwrap();
-        let mut i = 0;
-        while i < leaf.num_keys && leaf.keys[i].as_ref().unwrap() != key {
-            i += 1;
-        }
-        if i == leaf.num_keys {
-            return;
-        }
-
-        leaf.keys[i] = None;
-        leaf.records[i] = Arc::new(RwLock::new(None));
-        for j in i..leaf.num_keys - 1 {
-            leaf.keys.swap(j, j + 1);
-            leaf.records.swap(j, j + 1);
-        }
-        leaf.num_keys -= 1;
-
-        // leaf has enough keys/values
-        if leaf.num_keys >= (FANOUT - 1) / 2 {
-            return;
-        }
-
-        // leaf is the root node (and thus has no parent)
-        if Arc::ptr_eq(&leaf_node, &self.root) {
-            if leaf.num_keys == 0 {
-                *leaf_lock = None;
-            }
-            return;
-        }
-
-        let ExclusiveLatchInfo {
-            lock: mut parent_lock,
-            node: parent_node,
-        } = ancestor_latches.pop().unwrap();
-        let parent = parent_lock.as_mut().unwrap().get_interior_mut().unwrap();
-
-        let mut i = 0;
-        while i <= parent.num_keys && !Arc::ptr_eq(&leaf_node, &parent.children[i]) {
-            i += 1;
-        }
-        // we have too few keys in the node
-        let (discriminator_key, sibling_node) = if i < parent.num_keys {
-            (
-                parent.keys[i].clone().unwrap(),
-                parent.children[i + 1].clone(),
-            )
-        } else {
-            (
-                parent.keys[i - 1].clone().unwrap(),
-                parent.children[i - 1].clone(),
-            )
-        };
-
-        // we have too few keys in the node
-        let mut sibling_lock = sibling_node.write_arc();
-        let sibling = sibling_lock.as_mut().unwrap().get_leaf_mut().unwrap();
-        let (first, second) = if i < parent.num_keys {
-            (leaf, sibling)
-        } else {
-            (sibling, leaf)
-        };
-
-        // keys can fit into one node so let's merge
-        if first.num_keys + second.num_keys <= FANOUT - 1 {
-            for i in 0..second.num_keys {
-                mem::swap(&mut first.keys[i + first.num_keys], &mut second.keys[i]);
-                mem::swap(
-                    &mut first.records[i + first.num_keys],
-                    &mut second.records[i],
-                );
-            }
-            first.num_keys += second.num_keys;
-            first.next = second.next.clone();
-            // second.prev = None;
-
-            let (left_lock, right_child) = if i < parent.num_keys {
-                drop(sibling_lock);
-                (leaf_lock, sibling_node)
-            } else {
-                drop(leaf_lock);
-                (sibling_lock, leaf_node)
-            };
-
-            ancestor_latches.push(ExclusiveLatchInfo {
-                lock: parent_lock,
-                node: parent_node,
-            });
-            self.remove_from_parent(left_lock, &right_child, ancestor_latches);
-        }
-        // otherwise, we can borrow one from the other node
-        else {
-            // borrow from second
-            if first.num_keys < second.num_keys {
-                mem::swap(&mut first.keys[first.num_keys], &mut second.keys[0]);
-                mem::swap(&mut first.records[first.num_keys], &mut second.records[0]);
-                for i in 1..second.num_keys {
-                    second.keys.swap(i - 1, i);
-                    second.records.swap(i - 1, i);
-                }
-                first.num_keys += 1;
-                second.num_keys -= 1;
-            }
-            // borrow from first
-            else {
-                let mut i = second.num_keys;
-                while i > 0 {
-                    second.keys.swap(i, i - 1);
-                    second.records.swap(i, i - 1);
-                    i -= 1;
-                }
-                mem::swap(&mut second.keys[0], &mut first.keys[first.num_keys - 1]);
-                mem::swap(
-                    &mut second.records[0],
-                    &mut first.records[first.num_keys - 1],
-                );
-                first.num_keys -= 1;
-                second.num_keys += 1;
-            };
-
-            // replace the key in parent
-            for parent_key in &mut parent.keys {
-                if *parent_key.as_ref().unwrap() == discriminator_key {
-                    parent_key.replace(second.keys[0].clone().unwrap());
-                    break;
-                }
-            }
-        }
+        self.remove_helper(Some(key), None, None, ancestor_latches)
     }
 
     /* private */
@@ -318,7 +145,6 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             parking_lot::RawRwLock,
             Option<Node<FANOUT, K, V>>,
         >,
-        left: NodePtr<FANOUT, K, V>,
         key: K,
         right: NodePtr<FANOUT, K, V>,
         mut ancestor_latches: Vec<ExclusiveLatchInfo<FANOUT, K, V>>,
@@ -339,100 +165,57 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
 
         let ExclusiveLatchInfo {
             lock: mut parent_lock,
-            node: parent_node,
+            node: _,
         } = ancestor_latches.pop().unwrap();
 
         let parent = parent_lock.as_mut().unwrap().get_interior_mut().unwrap();
 
-        let mut left_idx_in_parent = 0;
-        while left_idx_in_parent < parent.num_keys
-            && !Arc::ptr_eq(&parent.children[left_idx_in_parent], &left)
-        {
-            left_idx_in_parent += 1
-        }
-
-        let mut i = parent.num_keys + 1;
-        while i > left_idx_in_parent + 1 {
-            parent.keys.swap(i - 1, i - 2);
-            parent.children.swap(i, i - 1);
-            i -= 1
-        }
-        parent.keys[left_idx_in_parent] = Some(key);
-        parent.children[left_idx_in_parent + 1] = right;
-        parent.num_keys += 1;
+        parent.insert(key, right);
 
         // 2 - interior node has no space so we have to split it
         if parent.num_keys == FANOUT {
-            let mut new_interior: Interior<FANOUT, K, V> = Node::new_interior();
-            let split = (FANOUT + 1) / 2 - 1;
-
-            for i in split + 1..parent.num_keys {
-                mem::swap(&mut parent.keys[i], &mut new_interior.keys[i - split - 1]);
-                mem::swap(
-                    &mut parent.children[i],
-                    &mut new_interior.children[i - split - 1],
-                );
-            }
-            let pushed_key = parent.keys[split].as_ref().unwrap().clone();
-            mem::swap(
-                &mut parent.children[FANOUT],
-                &mut new_interior.children[parent.num_keys - split - 1],
-            );
-            parent.keys[split] = None;
-
-            new_interior.num_keys = parent.num_keys - split - 1;
-            parent.num_keys = split;
-            let new_interior_node = Arc::new(RwLock::new(Some(Node::Interior(new_interior))));
-            self.insert_into_parent(
-                parent_lock,
-                parent_node,
-                pushed_key,
-                new_interior_node,
-                ancestor_latches,
-            );
+            let (pushed_key, new_interior_node) = parent.split();
+            self.insert_into_parent(parent_lock, pushed_key, new_interior_node, ancestor_latches);
         }
     }
 
-    fn remove_from_parent(
+    /* private */
+    fn remove_helper(
         &self,
-        left_lock: parking_lot::lock_api::ArcRwLockWriteGuard<
-            parking_lot::RawRwLock,
-            Option<Node<FANOUT, K, V>>,
+        key: Option<&K>,
+        left_child_lock: Option<
+            parking_lot::lock_api::ArcRwLockWriteGuard<
+                parking_lot::RawRwLock,
+                Option<Node<FANOUT, K, V>>,
+            >,
         >,
-        right_child: &NodePtr<FANOUT, K, V>,
+        right_child: Option<&NodePtr<FANOUT, K, V>>,
         mut ancestor_latches: Vec<ExclusiveLatchInfo<FANOUT, K, V>>,
     ) {
-        let ExclusiveLatchInfo {
-            lock: mut interior_lock,
-            node: interior_node,
-        } = ancestor_latches.pop().unwrap();
+        let ExclusiveLatchInfo { mut lock, node } = ancestor_latches.pop().unwrap();
+        let lock_unwrapped = lock.as_ref().unwrap();
 
-        let mut interior = interior_lock.as_mut().unwrap().get_interior_mut().unwrap();
-        let mut right_child_idx = 0;
-        while right_child_idx <= interior.num_keys
-            && !Arc::ptr_eq(&interior.children[right_child_idx], right_child)
-        {
-            right_child_idx += 1;
-        }
-        debug_assert_ne!(right_child_idx, interior.num_keys + 1);
-
-        interior.keys[right_child_idx - 1] = None;
-        interior.children[right_child_idx] = Node::new_empty();
-        for j in right_child_idx - 1..interior.num_keys - 1 {
-            interior.keys.swap(j, j + 1);
-            interior.children.swap(j + 1, j + 2);
-        }
-        interior.num_keys -= 1;
-
-        // interior is the root node (and thus no parent)
-        if Arc::ptr_eq(&interior_node, &self.root) {
-            if interior.num_keys == 0 {
-                *interior_lock = left_lock.clone();
+        if Arc::ptr_eq(&node, &self.root) && lock_unwrapped.get_num_keys() == 1 {
+            if let Some(Node::Interior(_)) = &*lock {
+                *lock = left_child_lock.unwrap().clone();
+            } else {
+                *lock = None;
             }
             return;
         }
 
-        if interior.num_keys >= FANOUT / 2 {
+        match lock.as_mut().unwrap() {
+            Node::Invalid => panic!("{}", "Invalid Node"),
+            Node::Leaf(leaf) => leaf.remove(key.unwrap()),
+            Node::Interior(node) => node.remove(right_child.unwrap()),
+        }
+
+        if Arc::ptr_eq(&node, &self.root) {
+            return;
+        }
+
+        let lock_unwrapped = lock.as_mut().unwrap();
+        if !lock_unwrapped.is_underfull() {
             return;
         }
 
@@ -443,109 +226,97 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         let parent = parent_lock.as_mut().unwrap().get_interior_mut().unwrap();
 
         let mut i = 0;
-        while i <= parent.num_keys && !Arc::ptr_eq(&interior_node, &parent.children[i]) {
+        while i <= parent.num_keys && !Arc::ptr_eq(&node, &parent.children[i]) {
             i += 1;
         }
         // we have too few keys in the node
-        let (discriminator_key, sibling_node) = if i < parent.num_keys {
-            (parent.keys[i].clone().unwrap(), &parent.children[i + 1])
-        } else {
-            (parent.keys[i - 1].clone().unwrap(), &parent.children[i - 1])
-        };
+        let discriminator_key;
+        let sibling_node;
+        let is_sibling_successor;
 
-        // acquiring this lock is safe since the parent has a write lock
+        if i < parent.num_keys {
+            discriminator_key = parent.keys[i].clone().unwrap();
+            sibling_node = parent.children[i + 1].clone();
+            is_sibling_successor = true;
+        } else {
+            discriminator_key = parent.keys[i - 1].clone().unwrap();
+            sibling_node = parent.children[i - 1].clone();
+            is_sibling_successor = false;
+        }
         let mut sibling_lock = sibling_node.write_arc();
-        let sibling = sibling_lock.as_mut().unwrap().get_interior_mut().unwrap();
-        let (first, second) = if i < parent.num_keys {
-            (interior, sibling)
-        } else {
-            (sibling, interior)
-        };
+        let sibling_lock_unwrapped = sibling_lock.as_mut().unwrap();
 
-        // we can borrow a key from one the other node
-        if first.num_keys > FANOUT / 2 || second.num_keys > FANOUT / 2 {
-            let replacement_key;
-            // borrow from second (the interior node in question is predecessor)
-            if first.num_keys < second.num_keys {
-                first.keys[first.num_keys] = Some(discriminator_key.clone());
-                mem::swap(
-                    &mut first.children[first.num_keys + 1],
-                    &mut second.children[0],
-                );
-
-                replacement_key = second.keys[0].clone();
-                second.keys[0] = None;
-                for i in 1..second.num_keys {
-                    second.keys.swap(i - 1, i);
-                    second.children.swap(i - 1, i);
+        if sibling_lock_unwrapped.get_num_keys() > FANOUT / 2 {
+            let to_replace = if is_sibling_successor {
+                match &mut *lock_unwrapped {
+                    Node::Invalid => panic!("Invalid Node"),
+                    Node::Leaf(leaf) => {
+                        leaf.borrow_from_successor(sibling_lock_unwrapped.get_leaf_mut().unwrap())
+                    }
+                    Node::Interior(interior) => interior.borrow_from_successor(
+                        sibling_lock_unwrapped.get_interior_mut().unwrap(),
+                        discriminator_key.clone(),
+                    ),
                 }
-                second.children.swap(second.num_keys - 1, second.num_keys);
-                first.num_keys += 1;
-                second.num_keys -= 1;
-                debug_assert!(first.num_keys > 0);
-                debug_assert!(second.num_keys > 0);
-            }
-            // borrow from first (the interior node in question is the successor)
-            else {
-                let mut i = second.num_keys;
-                second.children.swap(second.num_keys + 1, second.num_keys);
-                while i > 0 {
-                    second.keys.swap(i, i - 1);
-                    second.children.swap(i, i - 1);
-                    i -= 1;
+            } else {
+                match &mut *lock_unwrapped {
+                    Node::Invalid => panic!("Invalid Node"),
+                    Node::Leaf(leaf) => {
+                        leaf.borrow_from_predecessor(sibling_lock_unwrapped.get_leaf_mut().unwrap())
+                    }
+                    Node::Interior(interior) => interior.borrow_from_predecessor(
+                        sibling_lock_unwrapped.get_interior_mut().unwrap(),
+                        discriminator_key.clone(),
+                    ),
                 }
-                replacement_key = first.keys[first.num_keys - 1].clone();
-                first.keys[first.num_keys - 1] = None;
-                second.keys[0] = Some(discriminator_key.clone());
-                mem::swap(&mut second.children[0], &mut first.children[first.num_keys]);
-
-                first.num_keys -= 1;
-                second.num_keys += 1;
-                debug_assert!(first.num_keys > 0);
-                debug_assert!(second.num_keys > 0);
             };
-
-            // replace the key in parent
             for parent_key in &mut parent.keys {
                 if *parent_key.as_ref().unwrap() == discriminator_key {
-                    parent_key.replace(replacement_key.unwrap());
+                    *parent_key = to_replace;
                     break;
                 }
             }
-        }
-        // keys can fit into one node so let's merge
-        else {
-            first.keys[first.num_keys] = Some(discriminator_key);
-            for j in 0..second.num_keys {
-                mem::swap(&mut first.keys[j + first.num_keys + 1], &mut second.keys[j]);
-            }
-            for j in 0..second.num_keys + 1 {
-                mem::swap(
-                    &mut first.children[j + first.num_keys + 1],
-                    &mut second.children[j],
-                );
-            }
-            first.num_keys = first.num_keys + second.num_keys + 1;
-
-            let (left_lock, right_child) = if i < parent.num_keys {
-                drop(sibling_lock);
-                (interior_lock, sibling_node.clone())
+        } else {
+            if is_sibling_successor {
+                match &mut *lock_unwrapped {
+                    Node::Invalid => panic!("Invalid Node"),
+                    Node::Leaf(leaf) => leaf.merge(sibling_lock_unwrapped.get_leaf_mut().unwrap()),
+                    Node::Interior(interior) => interior.merge(
+                        sibling_lock_unwrapped.get_interior_mut().unwrap(),
+                        discriminator_key,
+                    ),
+                }
             } else {
-                drop(interior_lock);
-                (sibling_lock, interior_node)
+                match &mut *sibling_lock_unwrapped {
+                    Node::Invalid => panic!("Invalid Node"),
+                    Node::Leaf(leaf) => leaf.merge(lock_unwrapped.get_leaf_mut().unwrap()),
+                    Node::Interior(interior) => interior.merge(
+                        lock_unwrapped.get_interior_mut().unwrap(),
+                        discriminator_key,
+                    ),
+                }
             };
+
+            let (left_lock, right_child) = if is_sibling_successor {
+                drop(sibling_lock);
+                (lock, sibling_node)
+            } else {
+                drop(lock);
+                (sibling_lock, node)
+            };
+
             ancestor_latches.push(ExclusiveLatchInfo {
                 lock: parent_lock,
                 node: parent_node,
             });
-            self.remove_from_parent(left_lock, &right_child, ancestor_latches);
+            self.remove_helper(None, Some(left_lock), Some(&right_child), ancestor_latches);
         }
     }
 
     /* private */
     fn get_leaf_shared(&self, key: &K) -> SharedLatchInfo<FANOUT, K, V> {
         let mut current_node = self.root.clone();
-        let mut lock = current_node.upgradable_read_arc();
+        let mut lock = current_node.read_arc();
 
         while lock.is_some() && lock.as_ref().unwrap().is_interior() {
             current_node = {
@@ -558,7 +329,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             };
 
             let _old_lock = lock;
-            lock = current_node.upgradable_read_arc();
+            lock = current_node.read_arc();
         }
         SharedLatchInfo {
             node: current_node,
@@ -619,24 +390,45 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
     where
         F: Fn(&Node<FANOUT, K, V>) -> bool,
     {
-        let leaf_traversal_optimistic = self.get_leaf_shared(key);
+        // TODO: look into upgradable lock for optimistic latching
 
-        // we are safe from splitting so optimistic was good, and we upgrade to write latch
-        if leaf_traversal_optimistic.lock.is_none()
-            || clear_ancestors_latches(leaf_traversal_optimistic.lock.as_ref().unwrap())
-        {
-            vec![SharedLatchInfo::upgrade(leaf_traversal_optimistic)]
-        }
-        // if the leaf will require a split / merge, so restart with exclusive
-        else {
-            drop(leaf_traversal_optimistic);
-            self.get_leaf_exclusive(key, clear_ancestors_latches)
-        }
+        // let leaf_traversal_optimistic = self.get_leaf_shared(key);
+
+        // // we are safe from splitting so optimistic was good, and we upgrade to write latch
+        // if leaf_traversal_optimistic.lock.is_none()
+        //     || clear_ancestors_latches(leaf_traversal_optimistic.lock.as_ref().unwrap())
+        // {
+        //     vec![SharedLatchInfo::upgrade(leaf_traversal_optimistic)]
+        // }
+        // // if the leaf will require a split / merge, so restart with exclusive
+        // else {
+        //     drop(leaf_traversal_optimistic);
+
+        // let mut current_node = self.root.clone();
+        // let mut lock = current_node.read_arc();
+
+        // while lock.is_some() && lock.as_ref().unwrap().is_interior() {
+        //     current_node = {
+        //         let mut i = 0;
+        //         let node = lock.as_ref().unwrap().get_interior().unwrap();
+        //         while i < node.num_keys && *key >= *node.keys[i].as_ref().unwrap() {
+        //             i += 1;
+        //         }
+        //         node.children[i].clone()
+        //     };
+
+        //     let _old_lock = lock;
+        //     lock = current_node.read_arc();
+        // }
+
+        self.get_leaf_exclusive(key, clear_ancestors_latches)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::node::{interior::Interior, leaf::Leaf};
+
     use super::*;
     use std::sync::{Arc, Weak};
 

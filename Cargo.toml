@@ -9,3 +9,10 @@ edition = "2021"
 parking_lot = {version = "0.12", features = ["arc_lock"]}
 [features]
 "stress" = []
+
+[dev-dependencies]
+criterion = {version = "0.3", features = ["html_reports"]}
+
+[[bench]]
+name = "benchmark"
+harness = false
