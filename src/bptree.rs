@@ -149,9 +149,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         right: NodePtr<FANOUT, K, V>,
         mut ancestor_latches: Vec<ExclusiveLatchInfo<FANOUT, K, V>>,
     ) {
-        // 2 cases for insert into parent
-
-        // 1 - No parent for left/right. We need to make a new root node if there is no parent
+        // No parent for left/right. We need to make a new root node if there is no parent
         if ancestor_latches.is_empty() {
             let mut new_node: Interior<FANOUT, K, V> = Node::new_interior();
             new_node.keys[0] = Some(key);
@@ -169,10 +167,9 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         } = ancestor_latches.pop().unwrap();
 
         let parent = parent_lock.as_mut().unwrap().get_interior_mut().unwrap();
-
         parent.insert(key, right);
 
-        // 2 - interior node has no space so we have to split it
+        // interior node has no space so we have to split it
         if parent.num_keys == FANOUT {
             let (pushed_key, new_interior_node) = parent.split();
             self.insert_into_parent(parent_lock, pushed_key, new_interior_node, ancestor_latches);
@@ -195,6 +192,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         let ExclusiveLatchInfo { mut lock, node } = ancestor_latches.pop().unwrap();
         let lock_unwrapped = lock.as_ref().unwrap();
 
+        // check whether this node is the root and will be deleted either way
         if Arc::ptr_eq(&node, &self.root) && lock_unwrapped.get_num_keys() == 1 {
             if let Some(Node::Interior(_)) = &*lock {
                 *lock = left_child_lock.unwrap().clone();
@@ -204,17 +202,21 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             return;
         }
 
+        // perform the removal
         match lock.as_mut().unwrap() {
             Node::Invalid => panic!("{}", "Invalid Node"),
             Node::Leaf(leaf) => leaf.remove(key.unwrap()),
             Node::Interior(node) => node.remove(right_child.unwrap()),
         }
 
+        // if this is the root, we don't care about underfull conditions
         if Arc::ptr_eq(&node, &self.root) {
             return;
         }
 
         let lock_unwrapped = lock.as_mut().unwrap();
+
+        // if we have enough keys, we are done
         if !lock_unwrapped.is_underfull() {
             return;
         }
@@ -223,13 +225,12 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             lock: mut parent_lock,
             node: parent_node,
         } = ancestor_latches.pop().unwrap();
-        let parent = parent_lock.as_mut().unwrap().get_interior_mut().unwrap();
 
+        let parent = parent_lock.as_mut().unwrap().get_interior_mut().unwrap();
         let mut i = 0;
         while i <= parent.num_keys && !Arc::ptr_eq(&node, &parent.children[i]) {
             i += 1;
         }
-        // we have too few keys in the node
         let discriminator_key;
         let sibling_node;
         let is_sibling_successor;
@@ -246,6 +247,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         let mut sibling_lock = sibling_node.write_arc();
         let sibling_lock_unwrapped = sibling_lock.as_mut().unwrap();
 
+        // we either borrow from sibling if it has enough keys
         if sibling_lock_unwrapped.get_num_keys() > FANOUT / 2 {
             let to_replace = if is_sibling_successor {
                 match &mut *lock_unwrapped {
@@ -276,7 +278,9 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
                     break;
                 }
             }
-        } else {
+        }
+        // or we merge with the sibling
+        else {
             if is_sibling_successor {
                 match &mut *lock_unwrapped {
                     Node::Invalid => panic!("Invalid Node"),
