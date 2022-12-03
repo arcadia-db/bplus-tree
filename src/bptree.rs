@@ -231,49 +231,32 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         while i <= parent.num_keys && !Arc::ptr_eq(&node, &parent.children[i]) {
             i += 1;
         }
-        let discriminator_key;
+        let discriminator;
         let sibling_node;
         let is_sibling_successor;
 
         if i < parent.num_keys {
-            discriminator_key = parent.keys[i].clone().unwrap();
+            discriminator = parent.keys[i].clone().unwrap();
             sibling_node = parent.children[i + 1].clone();
             is_sibling_successor = true;
         } else {
-            discriminator_key = parent.keys[i - 1].clone().unwrap();
+            discriminator = parent.keys[i - 1].clone().unwrap();
             sibling_node = parent.children[i - 1].clone();
             is_sibling_successor = false;
         }
         let mut sibling_lock = sibling_node.write_arc();
-        let sibling_lock_unwrapped = sibling_lock.as_mut().unwrap();
 
         // we either borrow from sibling if it has enough keys
-        if sibling_lock_unwrapped.get_num_keys() > FANOUT / 2 {
+        if sibling_lock.as_ref().unwrap().get_num_keys() > FANOUT / 2 {
             let to_replace = if is_sibling_successor {
-                match &mut *lock_unwrapped {
-                    Node::Invalid => panic!("Invalid Node"),
-                    Node::Leaf(leaf) => {
-                        leaf.borrow_from_successor(sibling_lock_unwrapped.get_leaf_mut().unwrap())
-                    }
-                    Node::Interior(interior) => interior.borrow_from_successor(
-                        sibling_lock_unwrapped.get_interior_mut().unwrap(),
-                        discriminator_key.clone(),
-                    ),
-                }
+                lock_unwrapped
+                    .borrow_from_successor(sibling_lock.as_mut().unwrap(), discriminator.clone())
             } else {
-                match &mut *lock_unwrapped {
-                    Node::Invalid => panic!("Invalid Node"),
-                    Node::Leaf(leaf) => {
-                        leaf.borrow_from_predecessor(sibling_lock_unwrapped.get_leaf_mut().unwrap())
-                    }
-                    Node::Interior(interior) => interior.borrow_from_predecessor(
-                        sibling_lock_unwrapped.get_interior_mut().unwrap(),
-                        discriminator_key.clone(),
-                    ),
-                }
+                lock_unwrapped
+                    .borrow_from_predecessor(sibling_lock.as_mut().unwrap(), discriminator.clone())
             };
             for parent_key in &mut parent.keys {
-                if *parent_key.as_ref().unwrap() == discriminator_key {
+                if *parent_key.as_ref().unwrap() == discriminator {
                     *parent_key = to_replace;
                     break;
                 }
@@ -282,24 +265,13 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         // or we merge with the sibling
         else {
             if is_sibling_successor {
-                match &mut *lock_unwrapped {
-                    Node::Invalid => panic!("Invalid Node"),
-                    Node::Leaf(leaf) => leaf.merge(sibling_lock_unwrapped.get_leaf_mut().unwrap()),
-                    Node::Interior(interior) => interior.merge(
-                        sibling_lock_unwrapped.get_interior_mut().unwrap(),
-                        discriminator_key,
-                    ),
-                }
+                lock_unwrapped.merge(sibling_lock.as_mut().unwrap(), discriminator);
             } else {
-                match &mut *sibling_lock_unwrapped {
-                    Node::Invalid => panic!("Invalid Node"),
-                    Node::Leaf(leaf) => leaf.merge(lock_unwrapped.get_leaf_mut().unwrap()),
-                    Node::Interior(interior) => interior.merge(
-                        lock_unwrapped.get_interior_mut().unwrap(),
-                        discriminator_key,
-                    ),
-                }
-            };
+                sibling_lock
+                    .as_mut()
+                    .unwrap()
+                    .merge(lock_unwrapped, discriminator);
+            }
 
             let (left_lock, right_child) = if is_sibling_successor {
                 drop(sibling_lock);
