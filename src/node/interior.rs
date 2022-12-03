@@ -27,6 +27,14 @@ impl<const FANOUT: usize, K: Key, V: Record> Interior<FANOUT, K, V> {
         }
     }
 
+    pub fn search(&self, key: &K) -> NodePtr<FANOUT, K, V> {
+        let mut i = 0;
+        while i < self.num_keys && *key >= *self.keys[i].as_ref().unwrap() {
+            i += 1;
+        }
+        self.children[i].clone()
+    }
+
     pub fn insert(&mut self, key: K, child: NodePtr<FANOUT, K, V>) {
         let mut left_idx_in_parent = 0;
         while left_idx_in_parent < self.num_keys

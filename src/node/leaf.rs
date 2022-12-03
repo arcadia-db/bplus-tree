@@ -34,6 +34,15 @@ impl<const FANOUT: usize, K: Key, V: Record> Leaf<FANOUT, K, V> {
         }
     }
 
+    pub fn search(&self, key: &K) -> Option<RecordPtr<V>> {
+        for i in 0..self.num_keys {
+            if *key == *self.keys[i].as_ref().unwrap() {
+                return Some(self.records[i].clone());
+            }
+        }
+        None
+    }
+
     pub fn insert(&mut self, key: K, record: V) {
         let mut insertion_idx = 0;
         while insertion_idx < self.num_keys && key > *self.keys[insertion_idx].as_ref().unwrap() {

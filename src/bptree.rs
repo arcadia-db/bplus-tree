@@ -36,12 +36,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             return None;
         }
         let leaf = lock.as_ref().unwrap().get_leaf().unwrap();
-        for i in 0..leaf.num_keys {
-            if *key == *leaf.keys[i].as_ref().unwrap() {
-                return Some(leaf.records[i].clone());
-            }
-        }
-        None
+        leaf.search(key)
     }
 
     pub fn search_range(&self, (start, end): (&K, &K)) -> Vec<RecordPtr<V>> {
@@ -295,14 +290,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         let mut lock = current_node.read_arc();
 
         while lock.is_some() && lock.as_ref().unwrap().is_interior() {
-            current_node = {
-                let mut i = 0;
-                let node = lock.as_ref().unwrap().get_interior().unwrap();
-                while i < node.num_keys && *key >= *node.keys[i].as_ref().unwrap() {
-                    i += 1;
-                }
-                node.children[i].clone()
-            };
+            current_node = lock.as_ref().unwrap().get_interior().unwrap().search(key);
 
             let _old_lock = lock;
             lock = current_node.read_arc();
@@ -327,14 +315,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
 
         while lock.is_some() && lock.as_ref().unwrap().is_interior() {
             let old_node = current_node;
-            current_node = {
-                let mut i = 0;
-                let node = lock.as_ref().unwrap().get_interior().unwrap();
-                while i < node.num_keys && *key >= *node.keys[i].as_ref().unwrap() {
-                    i += 1;
-                }
-                node.children[i].clone()
-            };
+            current_node = lock.as_ref().unwrap().get_interior().unwrap().search(key);
 
             latches.push(ExclusiveLatchInfo {
                 lock,
