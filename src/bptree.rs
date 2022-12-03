@@ -36,12 +36,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             return None;
         }
         let leaf = lock.as_ref().unwrap().get_leaf().unwrap();
-        for i in 0..leaf.num_keys {
-            if *key == *leaf.keys[i].as_ref().unwrap() {
-                return Some(leaf.records[i].clone());
-            }
-        }
-        None
+        leaf.search(key)
     }
 
     pub fn search_range(&self, (start, end): (&K, &K)) -> Vec<RecordPtr<V>> {
@@ -149,9 +144,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         right: NodePtr<FANOUT, K, V>,
         mut ancestor_latches: Vec<ExclusiveLatchInfo<FANOUT, K, V>>,
     ) {
-        // 2 cases for insert into parent
-
-        // 1 - No parent for left/right. We need to make a new root node if there is no parent
+        // No parent for left/right. We need to make a new root node if there is no parent
         if ancestor_latches.is_empty() {
             let mut new_node: Interior<FANOUT, K, V> = Node::new_interior();
             new_node.keys[0] = Some(key);
@@ -169,10 +162,9 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         } = ancestor_latches.pop().unwrap();
 
         let parent = parent_lock.as_mut().unwrap().get_interior_mut().unwrap();
-
         parent.insert(key, right);
 
-        // 2 - interior node has no space so we have to split it
+        // interior node has no space so we have to split it
         if parent.num_keys == FANOUT {
             let (pushed_key, new_interior_node) = parent.split();
             self.insert_into_parent(parent_lock, pushed_key, new_interior_node, ancestor_latches);
@@ -195,6 +187,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         let ExclusiveLatchInfo { mut lock, node } = ancestor_latches.pop().unwrap();
         let lock_unwrapped = lock.as_ref().unwrap();
 
+        // check whether this node is the root and will be deleted either way
         if Arc::ptr_eq(&node, &self.root) && lock_unwrapped.get_num_keys() == 1 {
             if let Some(Node::Interior(_)) = &*lock {
                 *lock = left_child_lock.unwrap().clone();
@@ -204,17 +197,21 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             return;
         }
 
+        // perform the removal
         match lock.as_mut().unwrap() {
             Node::Invalid => panic!("{}", "Invalid Node"),
             Node::Leaf(leaf) => leaf.remove(key.unwrap()),
             Node::Interior(node) => node.remove(right_child.unwrap()),
         }
 
+        // if this is the root, we don't care about underfull conditions
         if Arc::ptr_eq(&node, &self.root) {
             return;
         }
 
         let lock_unwrapped = lock.as_mut().unwrap();
+
+        // if we have enough keys, we are done
         if !lock_unwrapped.is_underfull() {
             return;
         }
@@ -223,79 +220,53 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
             lock: mut parent_lock,
             node: parent_node,
         } = ancestor_latches.pop().unwrap();
-        let parent = parent_lock.as_mut().unwrap().get_interior_mut().unwrap();
 
+        let parent = parent_lock.as_mut().unwrap().get_interior_mut().unwrap();
         let mut i = 0;
         while i <= parent.num_keys && !Arc::ptr_eq(&node, &parent.children[i]) {
             i += 1;
         }
-        // we have too few keys in the node
-        let discriminator_key;
+        let discriminator;
         let sibling_node;
         let is_sibling_successor;
 
         if i < parent.num_keys {
-            discriminator_key = parent.keys[i].clone().unwrap();
+            discriminator = parent.keys[i].clone().unwrap();
             sibling_node = parent.children[i + 1].clone();
             is_sibling_successor = true;
         } else {
-            discriminator_key = parent.keys[i - 1].clone().unwrap();
+            discriminator = parent.keys[i - 1].clone().unwrap();
             sibling_node = parent.children[i - 1].clone();
             is_sibling_successor = false;
         }
         let mut sibling_lock = sibling_node.write_arc();
-        let sibling_lock_unwrapped = sibling_lock.as_mut().unwrap();
 
-        if sibling_lock_unwrapped.get_num_keys() > FANOUT / 2 {
+        // we either borrow from sibling if it has enough keys
+        if sibling_lock.as_ref().unwrap().get_num_keys() > FANOUT / 2 {
             let to_replace = if is_sibling_successor {
-                match &mut *lock_unwrapped {
-                    Node::Invalid => panic!("Invalid Node"),
-                    Node::Leaf(leaf) => {
-                        leaf.borrow_from_successor(sibling_lock_unwrapped.get_leaf_mut().unwrap())
-                    }
-                    Node::Interior(interior) => interior.borrow_from_successor(
-                        sibling_lock_unwrapped.get_interior_mut().unwrap(),
-                        discriminator_key.clone(),
-                    ),
-                }
+                lock_unwrapped
+                    .borrow_from_successor(sibling_lock.as_mut().unwrap(), discriminator.clone())
             } else {
-                match &mut *lock_unwrapped {
-                    Node::Invalid => panic!("Invalid Node"),
-                    Node::Leaf(leaf) => {
-                        leaf.borrow_from_predecessor(sibling_lock_unwrapped.get_leaf_mut().unwrap())
-                    }
-                    Node::Interior(interior) => interior.borrow_from_predecessor(
-                        sibling_lock_unwrapped.get_interior_mut().unwrap(),
-                        discriminator_key.clone(),
-                    ),
-                }
+                lock_unwrapped
+                    .borrow_from_predecessor(sibling_lock.as_mut().unwrap(), discriminator.clone())
             };
             for parent_key in &mut parent.keys {
-                if *parent_key.as_ref().unwrap() == discriminator_key {
+                if *parent_key.as_ref().unwrap() == discriminator {
                     *parent_key = to_replace;
                     break;
                 }
             }
-        } else {
+        }
+        // or we merge with the sibling
+        else {
             if is_sibling_successor {
-                match &mut *lock_unwrapped {
-                    Node::Invalid => panic!("Invalid Node"),
-                    Node::Leaf(leaf) => leaf.merge(sibling_lock_unwrapped.get_leaf_mut().unwrap()),
-                    Node::Interior(interior) => interior.merge(
-                        sibling_lock_unwrapped.get_interior_mut().unwrap(),
-                        discriminator_key,
-                    ),
-                }
+                lock_unwrapped.merge(sibling_lock.as_mut().unwrap(), discriminator);
             } else {
-                match &mut *sibling_lock_unwrapped {
-                    Node::Invalid => panic!("Invalid Node"),
-                    Node::Leaf(leaf) => leaf.merge(lock_unwrapped.get_leaf_mut().unwrap()),
-                    Node::Interior(interior) => interior.merge(
-                        lock_unwrapped.get_interior_mut().unwrap(),
-                        discriminator_key,
-                    ),
-                }
-            };
+                sibling_lock
+                    .as_mut()
+                    .unwrap()
+                    .merge(lock_unwrapped, discriminator);
+            }
 
             let (left_lock, right_child) = if is_sibling_successor {
                 drop(sibling_lock);
@@ -319,14 +290,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
         let mut lock = current_node.read_arc();
 
         while lock.is_some() && lock.as_ref().unwrap().is_interior() {
-            current_node = {
-                let mut i = 0;
-                let node = lock.as_ref().unwrap().get_interior().unwrap();
-                while i < node.num_keys && *key >= *node.keys[i].as_ref().unwrap() {
-                    i += 1;
-                }
-                node.children[i].clone()
-            };
+            current_node = lock.as_ref().unwrap().get_interior().unwrap().search(key);
 
             let _old_lock = lock;
             lock = current_node.read_arc();
@@ -351,14 +315,7 @@ impl<const FANOUT: usize, K: Key, V: Record> BPTree<FANOUT, K, V> {
 
         while lock.is_some() && lock.as_ref().unwrap().is_interior() {
             let old_node = current_node;
-            current_node = {
-                let mut i = 0;
-                let node = lock.as_ref().unwrap().get_interior().unwrap();
-                while i < node.num_keys && *key >= *node.keys[i].as_ref().unwrap() {
-                    i += 1;
-                }
-                node.children[i].clone()
-            };
+            current_node = lock.as_ref().unwrap().get_interior().unwrap().search(key);
 
             latches.push(ExclusiveLatchInfo {
                 lock,

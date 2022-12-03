@@ -40,10 +40,42 @@ impl<const FANOUT: usize, K: Key, V: Record> Node<FANOUT, K, V> {
         Arc::new(RwLock::new(None))
     }
 
-    create_node_get_fn!(get_leaf, &Self, &Leaf<FANOUT, K, V>, Leaf);
-    create_node_get_fn!(get_leaf_mut, &mut Self, &mut Leaf<FANOUT, K, V>, Leaf);
-    create_node_get_fn!(get_interior, &Self, &Interior<FANOUT, K, V>, Interior);
-    create_node_get_fn!(get_interior_mut, &mut Self, &mut Interior<FANOUT, K, V>, Interior);
+    pub fn borrow_from_predecessor(
+        &mut self,
+        predecessor: &mut Node<FANOUT, K, V>,
+        discriminator_key: K,
+    ) -> Option<K> {
+        match &mut *self {
+            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+            Node::Leaf(leaf) => leaf.borrow_from_predecessor(predecessor.get_leaf_mut().unwrap()),
+            Node::Interior(interior) => interior.borrow_from_predecessor(
+                predecessor.get_interior_mut().unwrap(),
+                discriminator_key,
+            ),
+        }
+    }
+    pub fn borrow_from_successor(
+        &mut self,
+        successor: &mut Node<FANOUT, K, V>,
+        discriminator_key: K,
+    ) -> Option<K> {
+        match &mut *self {
+            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+            Node::Leaf(leaf) => leaf.borrow_from_successor(successor.get_leaf_mut().unwrap()),
+            Node::Interior(interior) => interior
+                .borrow_from_successor(successor.get_interior_mut().unwrap(), discriminator_key),
+        }
+    }
+
+    pub fn merge(&mut self, successor: &mut Node<FANOUT, K, V>, discriminator_key: K) {
+        match &mut *self {
+            Node::Invalid => panic!("{}", INVALID_NODE_ERROR_MESSAGE),
+            Node::Leaf(leaf) => leaf.merge(successor.get_leaf_mut().unwrap()),
+            Node::Interior(interior) => {
+                interior.merge(successor.get_interior_mut().unwrap(), discriminator_key)
+            }
+        }
+    }
 
     pub fn is_interior(&self) -> bool {
         match self {
@@ -52,6 +84,11 @@ impl<const FANOUT: usize, K: Key, V: Record> Node<FANOUT, K, V> {
             _ => false,
         }
     }
+
+    create_node_get_fn!(get_leaf, &Self, &Leaf<FANOUT, K, V>, Leaf);
+    create_node_get_fn!(get_leaf_mut, &mut Self, &mut Leaf<FANOUT, K, V>, Leaf);
+    create_node_get_fn!(get_interior, &Self, &Interior<FANOUT, K, V>, Interior);
+    create_node_get_fn!(get_interior_mut, &mut Self, &mut Interior<FANOUT, K, V>, Interior);
 
     pub fn get_num_keys(&self) -> usize {
         match self {
